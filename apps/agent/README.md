@@ -20,7 +20,7 @@ Three rules everything follows:
 ```bash
 # repo root
 pnpm install
-cp .env.example .env          # set MONGODB_URI (Atlas M0 or a local replica set), keys optional
+# create .env at the repo root (gitignored) with MONGODB_URI, MONGODB_DB, VOYAGE_API_KEY, ANTHROPIC_API_KEY, ELEVENLABS_WEBHOOK_SECRET (see the table below)
 pnpm db:setup && pnpm db:seed # collections, validators, indexes, 3 search indexes, seed data (v1 profiles = the mocks' /describe)
 pnpm --filter agent dev       # builds packages/db, then mocks :4000 + control/webhooks/phone :4100 + supervised worker(s)
 ```
