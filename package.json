@@ -1,10 +1,15 @@
 {
-  "name": "mongodb_hackathon",
+  "name": "claim-coordinator",
   "version": "1.0.0",
+  "private": true,
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "db:setup": "pnpm --filter @claim-coordinator/db setup",
+    "db:seed": "pnpm --filter @claim-coordinator/db seed",
+    "db:reset": "pnpm --filter @claim-coordinator/db reset",
+    "db:smoke": "pnpm --filter @claim-coordinator/db smoke"
   },
   "repository": {
     "type": "git",
@@ -17,7 +22,7 @@
     "url": "https://github.com/Soham-Sasan-Codes-Wonders/mongoDB_hackathon/issues"
   },
   "homepage": "https://github.com/Soham-Sasan-Codes-Wonders/mongoDB_hackathon#readme",
-  "description": "",
+  "description": "Claim Coordinator hackathon workspace",
   "dependencies": {
     "express": "^5.3.0"
   }
