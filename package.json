@@ -1,0 +1,15 @@
+{
+  "name": "claim-coordinator",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "db:setup": "pnpm --filter @claims/db run setup",
+    "db:seed": "pnpm --filter @claims/db run seed",
+    "db:reset": "pnpm --filter @claims/db run reset",
+    "db:smoke": "pnpm --filter @claims/db run smoke",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  }
+}
