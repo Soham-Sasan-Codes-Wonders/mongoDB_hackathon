@@ -1,5 +1,5 @@
 import { actions, approvals, claims, experiences, tasks, timers, type ApprovalDoc, type OutsideSystem, type SystemSpec } from "../db.ts";
-import { applyDriftProposal } from "../subflows/drift.ts";
+import { applyDriftProposal, runDrift } from "../subflows/drift.ts";
 import type { MappingProposal } from "../llm/jobs.ts";
 import { notifyOperator, type ClaimCtx } from "./context.ts";
 import { confirmTask, handleOutcome } from "./outcomes.ts";
@@ -57,8 +57,15 @@ export async function applyDecision(c: ClaimCtx, body: Record<string, unknown>):
       return;
     }
     case "drift_mapping": {
-      const d = (ap.details ?? {}) as { trigger?: Record<string, unknown>; proposal?: MappingProposal | null; describe?: SystemSpec };
+      const d = (ap.details ?? {}) as { trigger?: Record<string, unknown>; proposal?: MappingProposal | null; describe?: SystemSpec; analysisFailed?: boolean };
       const trig = d.trigger ?? {};
+      if (approved && d.analysisFailed) {
+        // The analysis itself failed earlier (e.g. a rate limit): approving reruns it.
+        const action = ap.actionId ? await actions.getAction(ap.actionId) : null;
+        const r = await runDrift(c, { system: trig.system as OutsideSystem, taskId: String(ap.taskId), action, trigger: (trig.trigger ?? "validation_error") as never, error: String(trig.error ?? "drift"), ...(trig.op ? { op: String(trig.op) } : {}), ...(trig.step ? { step: String(trig.step) } : {}) });
+        if (r.outcome) await handleOutcome(c, r.outcome, 1);
+        return;
+      }
       if (!approved || !d.proposal || !d.describe) {
         await experiences.recordExperience({ problemType: "drift", system: String(trig.system ?? "unknown"), problem: String(trig.error ?? "drift"), fix: { operatorRejected: d.proposal ?? null }, outcome: "operator declined the proposed mapping", claimId: c.claimId });
         await notifyOperator(c, `Drift on ${trig.system} for ${ap.taskId} still needs a manual fix.`);
