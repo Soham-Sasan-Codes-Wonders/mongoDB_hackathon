@@ -8,3 +8,8 @@ coverage/
 prompts/
 .next/
 *.tsbuildinfo
+# Local secrets written by `elevenlabs onboard`
+/.env.local
+# Presentation / design notes (not code)
+/HOW_IT_WORKS.md
+/Claim Coordinator Agent*.md

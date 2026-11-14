@@ -34,6 +34,7 @@ pnpm --filter agent dev       # builds packages/db, then mocks :4000 + control/w
 | `LLM_MODEL` | Claude model for every job. Default `claude-haiku-5-5` (fast, low cost); e.g. `claude-opus-5-5` for harder judgment. |
 | `VOYAGE_API_KEY` | `voyage-3.5` embeddings (required by `packages/db`). For offline dev only, `ALLOW_LOCAL_EMBEDDINGS=1` uses a local hashing embedding instead. |
 | `ELEVENLABS_WEBHOOK_SECRET` | HMAC secret for `/phone/post-call`. Unset: every post-call webhook is rejected. |
+| `AUTOPILOT` | `operator` (default): the agent decides operator approvals itself (drift fixes, unclear LLM results, stuck actions, money gaps) and logs each decision. `off`: a person decides them in the operator console. Claimant approvals always wait for the claimant. |
 | `WORKERS` | `1` (default) or `2` to show lease takeover. |
 | `CLAIM_DAY_MS` | Wall ms per simulated claim day for a fresh clock (default `20000`). |
 | `DRIFT_AUTO_APPLY_THRESHOLD` | Drift mapping auto-apply confidence (default `0.85`). |

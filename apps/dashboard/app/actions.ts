@@ -1,6 +1,8 @@
 "use server";
 
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { CONTROL_URL, callJson, control, mocks } from "@/lib/server/agent";
 import { getDb } from "@/lib/server/db";
 import { DEMO_INTAKE, type IntakeInput } from "@/lib/demo";
@@ -45,14 +47,26 @@ export async function startClaim(form: FormData): Promise<ActionResult> {
   const r = await control<{ claimId: string; error?: string; issues?: unknown }>("/control/claims", intakeBody(input, files.map((f) => f.name)));
   if (!r.ok || !r.json?.claimId) return { ok: false, message: r.error ?? `the agent refused the claim: ${JSON.stringify(r.json).slice(0, 200)}` };
   const claimId = r.json.claimId;
-  if (files.length) {
-    const db = await getDb();
-    for (const f of files) {
-      const documentId = await db.uploadDocument({ claimId, docType: "photo", filename: f.name, bytes: Buffer.from(await f.arrayBuffer()), contentType: f.type || "application/octet-stream", source: "claimant", extractedText: `photo ${f.name}` });
-      await observe(claimId, "claimant", "document", { docType: "photo", documentId, filename: f.name });
-    }
-  }
+  await storePhotos(claimId, files);
   return { ok: true, message: `Claim ${claimId} filed`, claimId };
+}
+
+/** Store each photo in GridFS and insert a claimant `document` observation; the agent picks it up from there. */
+async function storePhotos(claimId: string, files: File[]) {
+  if (!files.length) return;
+  const db = await getDb();
+  for (const f of files) {
+    const documentId = await db.uploadDocument({ claimId, docType: "photo", filename: f.name, bytes: Buffer.from(await f.arrayBuffer()), contentType: f.type || "application/octet-stream", source: "claimant", extractedText: `photo ${f.name}` });
+    await observe(claimId, "claimant", "document", { docType: "photo", documentId, filename: f.name });
+  }
+}
+
+/** Claimant view: upload photos after intake (e.g. when the insurer adds a photo requirement). */
+export async function uploadPhotos(claimId: string, form: FormData): Promise<ActionResult> {
+  const files = form.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
+  if (!files.length) return { ok: false, message: "choose at least one photo" };
+  await storePhotos(claimId, files);
+  return { ok: true, message: `Uploaded ${files.length} photo${files.length === 1 ? "" : "s"}` };
 }
 
 
@@ -145,10 +159,20 @@ export async function resetDemo(): Promise<ActionResult> {
 
 /* ---------------------------------------------------------- inbound call */
 
+/** `pnpm --filter agent tunnel` rotates the secret in the repo-root .env; read it fresh, not from startup env. */
+function freshWebhookSecret(): string | undefined {
+  try {
+    const line = readFileSync(resolve(process.cwd(), "../../.env"), "utf8").split("\n").find((l) => l.startsWith("ELEVENLABS_WEBHOOK_SECRET="));
+    const v = line?.slice("ELEVENLABS_WEBHOOK_SECRET=".length).trim().replace(/^["']|["']$/g, "");
+    if (v) return v;
+  } catch { /* fall back to the startup env */ }
+  return process.env.ELEVENLABS_WEBHOOK_SECRET;
+}
+
 /** Post a signed ElevenLabs-style post-call payload to :4100/phone/post-call (as the seeded adjuster). */
 export async function simulateCall(claimId: string, variant: "approved" | "bank"): Promise<ActionResult> {
   const db = await getDb();
-  const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+  const secret = freshWebhookSecret();
   if (!secret) return { ok: false, message: "ELEVENLABS_WEBHOOK_SECRET is not set in .env" };
   const adj = (await db.listContacts(claimId)).find((c) => c.role === "adjuster" && !c.isCompanyMainLine) ?? (await db.listContacts()).find((c) => c.role === "adjuster");
   if (!adj) return { ok: false, message: "no adjuster contact seeded (run pnpm db:seed)" };
@@ -175,4 +199,30 @@ export async function simulateCall(claimId: string, variant: "approved" | "bank"
   const sig = `t=${t},v0=${createHmac("sha256", secret).update(`${t}.${body}`).digest("hex")}`;
   const r = await callJson(CONTROL_URL, "/phone/post-call", body, { "elevenlabs-signature": sig });
   return { ok: r.ok, message: r.ok ? `call from ${adj.name} delivered` : r.error ?? `HTTP ${r.status}: ${JSON.stringify(r.json)}` };
+}
+
+/* ------------------------------------------------------- live voice call */
+
+export type VoiceCaller = { phone: string; name: string; company: string; role: string; trust: string };
+
+/** Live voice call (ElevenLabs web widget): the agent id and the contacts you can call as. */
+export async function voiceCallSetup(claimId: string): Promise<{ ok: boolean; message: string; agentId?: string; callers?: VoiceCaller[] }> {
+  const agentId = process.env.ELEVENLABS_AGENT_ID;
+  if (!agentId) return { ok: false, message: "ELEVENLABS_AGENT_ID is not set in .env" };
+  const db = await getDb();
+  const callers = (await db.listContacts(claimId))
+    .filter((c) => c.role !== "claimant")
+    .map((c) => ({ phone: c.phone, name: c.name, company: c.company, role: c.role, trust: c.isCompanyMainLine ? "company_line" : c.trust }));
+  return { ok: true, message: "ok", agentId, callers };
+}
+
+/**
+ * A browser call has no caller ID, so ask the agent's initiation webhook who this number is (the
+ * same lookup a real call gets) and hand the result to the widget as dynamic variables.
+ * `caller_phone` lets /phone/post-call tie the transcript to the claim.
+ */
+export async function voiceCallerVars(phone: string): Promise<{ ok: boolean; message: string; vars?: Record<string, string> }> {
+  const r = await control<{ dynamic_variables?: Record<string, string> }>("/phone/initiation", { caller_id: phone });
+  if (!r.ok || !r.json?.dynamic_variables) return { ok: false, message: r.error ?? `initiation lookup failed: HTTP ${r.status}` };
+  return { ok: true, message: "ok", vars: { ...r.json.dynamic_variables, caller_phone: phone } };
 }

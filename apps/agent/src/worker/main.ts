@@ -3,6 +3,7 @@ import { config } from "../config.ts";
 import { log } from "../log.ts";
 import type { WorkerState } from "./loop.ts";
 import { Waker } from "./wake.ts";
+import { autopilotSweep } from "./autopilot.ts";
 
 const workerId = process.env.WORKER_ID ?? "worker-1";
 
@@ -16,6 +17,8 @@ async function main() {
   waker.startTimerLoop();
   waker.startSweeper();
   await waker.wakeAllActive();
+  // Operator approvals left pending from before (or while AUTOPILOT=off): decide them now.
+  if (workerId === "worker-1") await autopilotSweep().catch((e) => log(workerId, `autopilot sweep failed: ${e instanceof Error ? e.message : e}`));
 
   const shutdown = async (sig: string) => {
     log(workerId, `${sig}: releasing ${w.held.size} lease(s)`);
