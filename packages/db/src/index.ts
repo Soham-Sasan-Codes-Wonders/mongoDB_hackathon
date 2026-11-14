@@ -15,3 +15,4 @@ export * from "./contacts.js";
 export * from "./clock.js";
 export * from "./systemSpecs.js";
 export { closeDatabase } from "./database.js";
+export * from "./dashboard.js";

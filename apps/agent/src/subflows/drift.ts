@@ -99,7 +99,18 @@ export async function runDrift(c: ClaimCtx, d: DriftTrigger): Promise<{ status: 
       request: empty
         ? `${d.system} changed (${d.error}) and no mapping could be proposed. Fix the profile manually, then approve to retry ${d.taskId}.`
         : `${d.system} changed. Proposed: ${proposal!.mappings.map((m) => `${m.canonical} -> ${m.systemField}`).join(", ")}${proposal!.newTasks.length ? `; new task(s): ${proposal!.newTasks.map((t) => t.title).join(", ")}` : ""} (confidence ${confidence.toFixed(2)} < ${config.driftAutoApplyThreshold}). Approve to apply and retry with the same key.`,
-      details: { trigger: d, proposal, diff, describe, confidence },
+      details: {
+        trigger: { system: d.system, taskId: d.taskId, trigger: d.trigger, error: d.error, op: d.op ?? null, step: d.step ?? null },
+        proposal,
+        diff,
+        describe,
+        confidence,
+        threshold: config.driftAutoApplyThreshold,
+        // What the operator card shows: old -> new field, the Vector Search matches with scores, similar past drift.
+        renames: diff.removed.map((r) => ({ endpoint: r.endpoint, from: r.name, to: diff.added.find((a) => a.endpoint === r.endpoint && proposal?.mappings.some((m) => m.systemField === a.name && m.canonical === r.name))?.name ?? null })),
+        canonicalMatches,
+        similarExperiences: similar.map((e) => ({ problem: e.problem, fix: e.fix, outcome: e.outcome, score: e.score })),
+      },
     });
     c.event(`drift on ${d.system}: proposal sent to operator (confidence ${confidence.toFixed(2)})`);
     c.log(tag, `6 confidence ${confidence.toFixed(2)} < ${config.driftAutoApplyThreshold}: operator approval created; ${d.taskId} stays blocked_drift`);
@@ -128,7 +139,11 @@ export async function applyDriftProposal(c: ClaimCtx, d: DriftTrigger, proposal:
   // New required steps become tasks wired into dependsOn so they block what they must precede.
   const inserted: string[] = [];
   for (const nt of proposal.newTasks) {
-    const blocks = nt.blocksTaskIds.length ? nt.blocksTaskIds : ["T9"];
+    // Code, not the model, decides what a new required step blocks: the task whose proof it withheld
+    // (the drift was detected on it) comes first; the model's suggestions are added after.
+    const own = d.trigger === "new_required_step" ? [d.taskId] : [];
+    const blocks = [...new Set([...own, ...nt.blocksTaskIds])];
+    if (!blocks.length) blocks.push("T9");
     const newId = `${blocks[0]}a#${nt.step}`;
     const added = await tasks.insertTaskIfMissing({
       claimId: c.claimId,

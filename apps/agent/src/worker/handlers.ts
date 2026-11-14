@@ -568,7 +568,8 @@ const T18: Handler = {
 
 const UploadStep: Handler = {
   async plan(c, t) {
-    const kind = String(t.params.kind ?? `upload_${t.params.step}`);
+    // Code decides what is executable: any photo step runs through the upload_photos adapter, whatever the model called it.
+    const kind = /photo/i.test(`${t.params.step ?? ""} ${t.params.kind ?? ""}`) ? "upload_photos" : String(t.params.kind ?? `upload_${t.params.step}`);
     if (kind !== "upload_photos") return { type: "hold", status: "blocked_drift", note: `no adapter for ${kind}; operator needed` };
     const docs = await documents.listDocuments(c.claimId, "photo");
     const photos = docs.length ? docs.map((d) => `document:${String(d._id)}`) : ((facts(c).photos as string[] | undefined) ?? []);

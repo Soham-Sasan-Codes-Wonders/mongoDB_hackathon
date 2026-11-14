@@ -4,7 +4,10 @@ import { config } from "../config.ts";
 import { errMsg, log } from "../log.ts";
 import { HANDBOOK } from "./prompts.ts";
 
-export const MODEL = "claude-opus-5-5";
+/** Claude Haiku 5.5 by default (fast, low cost); override with LLM_MODEL (e.g. claude-opus-5-5). */
+export const MODEL = process.env.LLM_MODEL || "claude-haiku-5-5";
+/** Server-side refusal fallbacks exist for these models only; Haiku 5.5 has none (a refusal goes to an operator). */
+const SUPPORTS_FALLBACKS = /^claude-(opus-5|fable-5|sonnet-5-5)/.test(MODEL);
 export type Effort = "low" | "medium";
 
 export type LlmFailure = {
@@ -61,7 +64,7 @@ export interface StructuredCall<T> {
 
 /**
  * Every LLM call goes through here: structured JSON via output_config.format, adaptive thinking,
- * explicit effort, server-side refusal fallbacks, stop_reason checked BEFORE content is read,
+ * explicit effort, server-side refusal fallbacks where the model has them, stop_reason checked BEFORE content is read,
  * zod validation BEFORE anything is returned. Never throws: callers get {ok:false} and route it
  * to an operator approval instead of writing.
  */
@@ -80,8 +83,7 @@ export async function callStructured<T>(c: StructuredCall<T>): Promise<LlmResult
     const res = await getClient().beta.messages.create({
       model: MODEL,
       max_tokens: c.maxTokens ?? 16000,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
+      ...(SUPPORTS_FALLBACKS ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
       thinking: { type: "adaptive" },
       output_config: { effort: c.effort, format: { type: "json_schema", schema: toOutputSchema(c.schema) } },
       system: [{ type: "text", text: HANDBOOK, cache_control: { type: "ephemeral" } }],
