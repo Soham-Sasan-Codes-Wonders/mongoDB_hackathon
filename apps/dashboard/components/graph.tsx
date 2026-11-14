@@ -20,23 +20,24 @@ function TaskNode({ data }: NodeProps<Node<TaskNodeData>>) {
   return (
     <div
       onClick={() => data.onSelect?.(t)}
-      className={`w-[156px] cursor-pointer rounded-lg border-2 bg-s2 px-2 py-1.5 text-left ${data.fresh ? "node-inserted" : ""}`}
-      style={{ borderColor: l.color, borderStyle: data.inserted ? "dashed" : "solid" }}
+      className={`relative w-[150px] cursor-pointer overflow-hidden rounded-lg bg-s1 py-1.5 pr-2 pl-3 text-left shadow-[var(--shadow-sm)] transition hover:shadow-[var(--shadow-md)] ${data.fresh ? "node-inserted" : ""}`}
+      style={{ border: `1px ${data.inserted ? "dashed" : "solid"} ${data.inserted ? l.color : "var(--border)"}` }}
       title={`${t.taskId} · ${t.title ?? t.type} · ${l.label}${data.inserted ? " · inserted by a subflow" : ""}`}
     >
+      <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: l.color }} />
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
       <div className="flex items-center justify-between gap-1">
-        <span className="font-mono text-xs font-bold text-ink">{t.taskId.replace("#", "·")}</span>
-        <span aria-hidden className="text-sm" style={{ color: l.color }}>{l.icon}</span>
+        <span className="font-mono text-[11px] font-semibold text-ink">{t.taskId.replace("#", "·")}</span>
+        <span aria-hidden className="text-[11px]" style={{ color: l.color }}>{l.icon}</span>
       </div>
-      <div className="truncate text-[11px] leading-tight text-ink2">{t.title ?? t.type}</div>
-      <div className="text-[10px] font-medium" style={{ color: l.color }}>{l.label}</div>
+      <div className="truncate text-[10.5px] leading-tight text-ink2">{t.title ?? t.type}</div>
+      <div className="mt-0.5 text-[10px] font-medium" style={{ color: l.color }}>{l.label}</div>
       <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
     </div>
   );
 }
 function LaneLabel({ data }: NodeProps<Node<{ label: string }>>) {
-  return <div className="w-[90px] text-xs font-semibold tracking-wider text-mute uppercase">{data.label}</div>;
+  return <div className="w-[90px] text-[10px] font-semibold tracking-widest text-mute uppercase">{data.label}</div>;
 }
 const nodeTypes = { task: TaskNode, lane: LaneLabel };
 
@@ -88,16 +89,16 @@ export function TaskGraph({ tasks, onSelect }: { tasks: TaskJ[]; onSelect?: (t: 
         if (!tasks.some((x) => x.taskId === dep)) continue;
         const toClose = t.taskId === "T18";
         const live = ["in_progress", "waiting", "ready"].includes(t.status);
-        es.push({ id: `${dep}->${t.taskId}`, source: dep, target: t.taskId, animated: live && !toClose, style: { stroke: "var(--border)", strokeWidth: toClose ? 1 : 1.6, opacity: toClose ? 0.25 : 0.9 } });
+        es.push({ id: `${dep}->${t.taskId}`, source: dep, target: t.taskId, animated: live && !toClose, style: { stroke: "var(--border-strong)", strokeWidth: toClose ? 1 : 1.4, opacity: toClose ? 0.3 : 0.9 } });
       }
     }
     return { nodes: ns, edges: es };
   }, [tasks, onSelect]);
 
   return (
-    <div className="h-[400px] w-full overflow-hidden rounded-lg border border-line">
+    <div className="h-[400px] w-full overflow-hidden rounded-xl bg-s2/40">
       <ReactFlow key={tasks.length} nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.04 }} minZoom={0.3} nodesDraggable={false} nodesConnectable={false} proOptions={{ hideAttribution: true }}>
-        <Background gap={24} size={1} color="var(--surface-3)" />
+        <Background gap={20} size={1} color="var(--border-strong)" />
         <Controls showInteractive={false} position="top-right" />
       </ReactFlow>
     </div>

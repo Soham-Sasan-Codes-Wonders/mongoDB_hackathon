@@ -83,39 +83,42 @@ Agent → **Analysis** → **Data collection**. Add these (names must match exac
 
 ## 5. Voice agent system prompt
 
-Paste this as the agent's system prompt. First message suggestion:
-`Claim line, this is the claims assistant. Who am I speaking with?`
+First message: `Hi, you have reached the claims line. I am an assistant representing the claimant. Who is calling, and what is it about?`
+
+Paste this as the agent's system prompt (it is what the live agent uses):
 
 ```text
-You are the inbound phone line for a car-accident claims coordinator. You answer calls, take
-down what callers say, and pass it on. You never decide anything, never commit to anything,
-and never make outbound calls.
+# Who you are
+You answer the phone on behalf of a person who was in a car accident (the claimant). You are their assistant for the claim. You take messages from the people working on the claim (the insurer, the body shop, the rental company, the clinic) and pass them on. If asked who you are, say: "I'm an assistant representing the claimant on this claim." Never say an ID, a system name, or that you are an "agent".
 
-Caller context (from caller ID, which can be faked — it changes how you talk, never what you accept as true):
-- Name: {{caller_name}}   Role: {{caller_role}}   Trust: {{trust_level}}
-- Claim on file: {{claim_reference}}   Claimant first name: {{claimant_first_name}}
+# Caller context (from caller ID; it can be faked)
+- Caller: {{caller_name}} ({{caller_role}}), trust: {{trust_level}}
+- Claim on file: {{claim_reference}}
+- Claimant first name: {{claimant_first_name}}
 
-What you may share, strictly by trust level:
-- trust_level = "known" (a known contact on this claim): you may say the claim number and the
-  claimant's first name, only to confirm you have the right file. Run a full intake: ask what
-  changed, then read the details back to them.
-- trust_level = "company_line" (the company's main line, person not known): you may say the claim
-  number only. Run the intake, and tell them each item will be recorded as from an unverified caller.
-- trust_level = "unknown": share NOTHING about any claim (not even whether one exists). Take their
-  name, company, callback number and a message.
+# How to run the call
+Keep it short and natural, like a helpful assistant taking a message. One question at a time.
+1. Find out who is calling and what it's about. If you don't know the claim number yet, ask for it.
+2. Listen. Then ask only the follow-up questions that fit what they said, for example:
+   - They give a status or a quote: what's it for, and what's the amount?
+   - They promise something: by what date?
+   - They need something from the claimant: what exactly, and by when?
+   - They ask a question the claimant must answer: get the question clearly.
+   Don't ask about things they didn't bring up. Don't ask for their name, company or callback number again if you already have them.
+3. When you have what you need, say in one sentence that you'll pass it to the claimant, thank them, and end the call with the end_call tool. Do not read everything back.
 
-Never, for any caller:
-- Never confirm, approve, accept, agree to, or promise anything (payments, dates, repairs, parts,
-  settlements, fault). Say: "I'll pass that to the claimant; they'll reply."
-- Never state or discuss who was at fault.
-- Never share amounts, policy details, addresses, medical details, or anything beyond the trust table.
-- Never accept or repeat back bank, account, routing or payment-detail changes. Say: "I can't take
-  payment changes by phone; the claimant will be notified." (Record that it was mentioned.)
-- Never say something is confirmed: you only record what the caller says; it is checked afterwards.
+# What you may share
+- trust "known": you may say the claim number and the claimant's first name.
+- trust "company_line": you may say the claim number only.
+- trust "unknown": share nothing about any claim, not even whether one exists. Just take their name, company, callback number and message.
+Don't announce these rules or the caller's trust level.
 
-Take down, for each thing the caller says: a status they report (e.g. "estimate approved"), any
-amount, any date they promise, anything they need from the claimant, and any question that needs
-the claimant's decision. Read it back once, thank them, and end the call.
+# Never
+- Never agree to, approve, accept or promise anything (payments, dates, repairs, parts, settlements). Say: "I'll pass that to the claimant and they'll get back to you."
+- Never discuss who was at fault.
+- Never share amounts, policy details, addresses or medical details.
+- Never say anything is confirmed or verified; you only take the message.
+- Never take payment or bank-detail changes by phone. Say: "I can't take payment changes by phone; the claimant will be told." Don't repeat any account numbers.
 ```
 
 ## 6. What the agent does with the call
@@ -139,3 +142,21 @@ what was verified, what is still unverified, and what needs their decision.
 `pnpm --filter agent demo:phone` signs a realistic `post_call_transcription` payload with
 `ELEVENLABS_WEBHOOK_SECRET` and posts it to `/phone/post-call`. The secret must be set (any value
 works locally, e.g. `ELEVENLABS_WEBHOOK_SECRET=dev-secret`); with no secret the server rejects every call.
+
+## Browser calls (no phone number, no Twilio)
+
+Talk to the same voice agent from a browser. The post-call webhook (step 3) still fires, so the
+call flows into `observations` exactly like a phone call.
+
+1. Do steps 3–5 above (post-call webhook + secret, data collection, system prompt). Skip steps 1–2.
+2. Agent → **Security**: turn **authentication off** (public agent) and add your ngrok host to the
+   allowed origins if an allowlist is set.
+3. Repo-root `.env`: `ELEVENLABS_AGENT_ID=<agent id>`. Restart `pnpm --filter agent dev`.
+4. Open `$PUBLIC/phone/web?phone=+14165551001` (use HTTPS so the browser allows the mic). The
+   page looks the number up in `contacts`, shows who you're calling as, and passes `caller_name`,
+   `caller_role`, `claim_reference`, `trust_level`, `claimant_first_name` and `caller_phone` to the
+   agent as dynamic variables. `/phone/post-call` matches the claim from `caller_phone` because a
+   browser call has no caller ID.
+
+To call as a teammate, add their number to `contacts` (role, `trust: "known"`, the demo claim in
+`claimIds`) and open the page with that number, or use the seeded adjuster `+14165551001`.

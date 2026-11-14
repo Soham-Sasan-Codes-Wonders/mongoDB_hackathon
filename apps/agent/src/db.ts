@@ -265,7 +265,7 @@ export const leases = {
 
 export const approvals = {
   async createApproval(a: { claimId: string; actionId: string | null; taskId?: string | null; gate: Gate; request: string; details?: Record<string, unknown> }) {
-    return db.createApproval({
+    const id = await db.createApproval({
       claimId: a.claimId,
       gate: a.gate,
       approverRole: db.GATE_APPROVER[a.gate],
@@ -275,6 +275,9 @@ export const approvals = {
       ...(a.taskId ? { taskId: a.taskId } : {}),
       ...(a.details ? { details: a.details } : {}),
     });
+    // Operator gates: the agent decides them itself unless AUTOPILOT=off (lazy import: no cycle).
+    if (db.GATE_APPROVER[a.gate] === "operator") await (await import("./worker/autopilot.ts")).autopilotApproval(String(id));
+    return id;
   },
   getApproval: (id: string | ObjectId) => db.getApproval(id),
   listApprovals: (claimId: string, status?: db.Approval["status"]) => db.listApprovals(claimId, status),

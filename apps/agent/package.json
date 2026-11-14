@@ -15,6 +15,7 @@
     "demo:phone": "tsx scripts/demo-phone.ts",
     "demo:rejection": "tsx scripts/demo-rejection.ts",
     "demo:all": "tsx scripts/demo-all.ts",
+    "tunnel": "tsx scripts/tunnel.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "predev": "pnpm --filter @claim-coordinator/db run build",

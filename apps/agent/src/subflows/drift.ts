@@ -41,10 +41,31 @@ export function diffProfile(latest: { fields: ProfileField[]; workflowSteps: str
  * then save a new profile version, retry with the SAME key, and record the experience.
  */
 export async function runDrift(c: ClaimCtx, d: DriftTrigger): Promise<{ status: "applied" | "awaiting_operator" | "skipped"; outcome?: ExecOutcome | null }> {
-  const tag = "drift";
   // Don't open a second drift for the same task while one waits for an operator.
   const pending = (await approvals.listApprovals(c.claimId, "pending")).find((a) => a.gate === "drift_mapping" && a.taskId === d.taskId);
   if (pending) return { status: "skipped" };
+  try {
+    return await analyseDrift(c, d);
+  } catch (e) {
+    // e.g. the embeddings API rate-limited us. Never leave the task blocked with nothing to act on:
+    // hand it to an operator, whose approval reruns the analysis.
+    const msg = errMsg(e).slice(0, 300);
+    c.log("drift", `analysis failed: ${msg}; operator approval created (approve = retry)`);
+    await approvals.createApproval({
+      claimId: c.claimId,
+      actionId: d.action ? String(d.action._id) : null,
+      taskId: d.taskId,
+      gate: "drift_mapping",
+      request: `Drift analysis on ${d.system} for ${d.taskId} failed (${msg}). Approve to retry the analysis; decline to fix it by hand.`,
+      details: { trigger: { system: d.system, taskId: d.taskId, trigger: d.trigger, error: d.error, op: d.op ?? null, step: d.step ?? null }, analysisFailed: true, failure: msg },
+    });
+    c.event(`drift analysis on ${d.system} failed; operator asked to retry`);
+    return { status: "awaiting_operator" };
+  }
+}
+
+async function analyseDrift(c: ClaimCtx, d: DriftTrigger): Promise<{ status: "applied" | "awaiting_operator" | "skipped"; outcome?: ExecOutcome | null }> {
+  const tag = "drift";
 
   // 1. pause the affected task only
   await tasks.setTaskStatus(c.claimId, d.taskId, "blocked_drift", { by: c.workerId, note: `${d.trigger}: ${d.error}` });
@@ -62,12 +83,18 @@ export async function runDrift(c: ClaimCtx, d: DriftTrigger): Promise<{ status: 
   c.log(tag, `2 diff vs profile v${latest?.version ?? 0}: +${diff.added.map((f) => `${f.endpoint}.${f.name}`).join(",") || "-"} / -${diff.removed.map((f) => `${f.endpoint}.${f.name}`).join(",") || "-"} / new steps ${diff.newSteps.join(",") || "-"}`);
 
   // 3. embed each new/renamed field with samples -> Vector Search against canonical fields
+  // One embedding per distinct field name: a rename usually shows up on several endpoints.
   const canonicalMatches = [];
+  const byName = new Map<string, { fieldName: string; score: number }[]>();
   for (const f of diff.added) {
-    const text = `${d.system} field ${f.name} (${f.type}): ${f.description ?? ""}. samples: ${(f.sampleValues ?? []).join(", ")}`;
-    const candidates = await profiles.matchCanonicalField(text, 3);
-    canonicalMatches.push({ systemField: f.name, endpoint: f.endpoint, candidates: candidates.map((x) => ({ fieldName: x.fieldName, score: Number(x.score.toFixed(3)) })) });
-    c.log(tag, `3 vector: ${f.name} -> ${candidates.map((x) => `${x.fieldName}(${x.score.toFixed(2)})`).join(", ")}`);
+    let candidates = byName.get(f.name);
+    if (!candidates) {
+      const text = `${d.system} field ${f.name} (${f.type}): ${f.description ?? ""}. samples: ${(f.sampleValues ?? []).join(", ")}`;
+      candidates = (await profiles.matchCanonicalField(text, 3)).map((x) => ({ fieldName: x.fieldName, score: Number(x.score.toFixed(3)) }));
+      byName.set(f.name, candidates);
+      c.log(tag, `3 vector: ${f.name} -> ${candidates.map((x) => `${x.fieldName}(${x.score.toFixed(2)})`).join(", ")}`);
+    }
+    canonicalMatches.push({ systemField: f.name, endpoint: f.endpoint, candidates });
   }
 
   // 4. Vector Search experiences for similar past drift
@@ -167,7 +194,8 @@ export async function applyDriftProposal(c: ClaimCtx, d: DriftTrigger, proposal:
   let outcome: ExecOutcome | null = null;
   if (d.action) {
     const a = await actions.getAction(d.action._id);
-    if (a && (a.status === "sent" || a.status === "acknowledged")) {
+    // A 422 parks the action as `failed` (shared state machine: failed -> sent is the same-key retry).
+    if (a && (a.status === "failed" || a.status === "sent" || a.status === "acknowledged")) {
       await tasks.setTaskStatus(c.claimId, d.taskId, "in_progress", { by: c.workerId, note: `drift fixed (profile v${version}); retrying with the same key` });
       try {
         outcome = await retry(a, c.workerId);
