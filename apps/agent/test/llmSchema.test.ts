@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { toOutputSchema } from "../src/llm/client.ts";
 import { AccidentDetails, CallInterpretation, MappingProposal, RejectionClassification } from "../src/llm/jobs.ts";
 import { diffProfile } from "../src/subflows/drift.ts";
-import { V1_SYSTEM_SPECS, specToProfileFields } from "@claims/db";
+import { V1_SYSTEM_SPECS, specToProfileFields } from "../src/db.ts";
 
 const walkObjects = (n: unknown, f: (o: Record<string, unknown>) => void) => {
   if (Array.isArray(n)) return n.forEach((x) => walkObjects(x, f));

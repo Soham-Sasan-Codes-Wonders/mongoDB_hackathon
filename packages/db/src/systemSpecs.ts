@@ -1,4 +1,6 @@
-import type { OutsideSystem, ProfileField } from "./schemas.ts";
+import type { ProfileField } from "./schemas.js";
+
+export type OutsideSystem = "insurer" | "body_shop" | "rental" | "clinic";
 
 /**
  * Version-1 API descriptions of the four outside systems. `db:seed` stores these as v1
@@ -18,13 +20,7 @@ export interface SystemSpec {
   workflowSteps: string[];
 }
 
-const f = (name: string, type: string, required: boolean, description: string, sampleValues: string[] = []): ProfileField => ({
-  name,
-  type,
-  required,
-  description,
-  sampleValues,
-});
+const f = (name: string, type: string, required: boolean, description: string, sampleValues: string[] = []): ProfileField => ({ name, type, required, description, sampleValues });
 
 export const V1_SYSTEM_SPECS: Record<OutsideSystem, SystemSpec> = {
   insurer: {
@@ -147,24 +143,3 @@ export const V1_SYSTEM_SPECS: Record<OutsideSystem, SystemSpec> = {
 export function specToProfileFields(spec: SystemSpec): ProfileField[] {
   return spec.endpoints.flatMap((e) => e.fields.map((fl) => ({ ...fl, endpoint: e.op })));
 }
-
-export const CANONICAL_FIELDS: { name: string; description: string; sampleValues: string[] }[] = [
-  { name: "policyNumber", description: "Insurance policy number / policy reference identifying the claimant's policy", sampleValues: ["POL-88812", "POL-10293"] },
-  { name: "claimNumber", description: "Insurer's claim number", sampleValues: ["INS-7001"] },
-  { name: "vehicleVin", description: "Vehicle identification number (VIN)", sampleValues: ["1HGCM82633A004352"] },
-  { name: "treatmentCode", description: "Medical treatment / procedure (CPT) code on a clinic invoice", sampleValues: ["99213", "97110"] },
-  { name: "lossDate", description: "Date of loss / accident date", sampleValues: ["2026-11-14"] },
-  { name: "location", description: "Accident location / place", sampleValues: ["Main St & 3rd Ave"] },
-  { name: "description", description: "Narrative description of what happened", sampleValues: ["Rear-ended at a red light"] },
-  { name: "amount", description: "Monetary amount / total", sampleValues: ["2400", "180"] },
-  { name: "invoiceId", description: "Invoice identifier", sampleValues: ["INV-501"] },
-  { name: "externalRef", description: "Our own claim reference sent to an outside system", sampleValues: ["CLM-1042"] },
-  { name: "claimRef", description: "Our own claim reference (claim id)", sampleValues: ["CLM-1042"] },
-  { name: "dailyRate", description: "Rental daily rate", sampleValues: ["40"] },
-  { name: "days", description: "Number of rental days", sampleValues: ["10"] },
-  { name: "startDate", description: "Start date", sampleValues: ["2026-11-15"] },
-  { name: "shopRef", description: "Body shop booking reference", sampleValues: ["BK-1001"] },
-  { name: "photos", description: "Damage photos", sampleValues: ["photo-1.jpg"] },
-  { name: "approvedAmount", description: "Amount approved by the insurer", sampleValues: ["2400"] },
-  { name: "customerName", description: "Customer / claimant full name", sampleValues: ["Dana Reyes"] },
-];

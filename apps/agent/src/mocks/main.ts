@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { clock } from "@claims/db";
+import { clock } from "../db.ts";
 import { config } from "../config.ts";
 import { errMsg, log } from "../log.ts";
 import { createMockServer } from "./server.ts";

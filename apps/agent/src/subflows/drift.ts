@@ -1,7 +1,7 @@
 import {
   actions, approvals, experiences, profiles, tasks,
   type ActionDoc, type OutsideSystem, type ProfileField, type SystemSpec,
-} from "@claims/db";
+} from "../db.ts";
 import { config } from "../config.ts";
 import { getter, retry, type ExecOutcome } from "../executor/index.ts";
 import { reads } from "../executor/adapters.ts";
@@ -43,7 +43,7 @@ export function diffProfile(latest: { fields: ProfileField[]; workflowSteps: str
 export async function runDrift(c: ClaimCtx, d: DriftTrigger): Promise<{ status: "applied" | "awaiting_operator" | "skipped"; outcome?: ExecOutcome | null }> {
   const tag = "drift";
   // Don't open a second drift for the same task while one waits for an operator.
-  const pending = (await approvals.listApprovals(c.claimId, "pending")).find((a) => a.gate === "low_confidence_drift" && a.taskId === d.taskId);
+  const pending = (await approvals.listApprovals(c.claimId, "pending")).find((a) => a.gate === "drift_mapping" && a.taskId === d.taskId);
   if (pending) return { status: "skipped" };
 
   // 1. pause the affected task only
@@ -95,7 +95,7 @@ export async function runDrift(c: ClaimCtx, d: DriftTrigger): Promise<{ status: 
       claimId: c.claimId,
       actionId: d.action ? String(d.action._id) : null,
       taskId: d.taskId,
-      gate: "low_confidence_drift",
+      gate: "drift_mapping",
       request: empty
         ? `${d.system} changed (${d.error}) and no mapping could be proposed. Fix the profile manually, then approve to retry ${d.taskId}.`
         : `${d.system} changed. Proposed: ${proposal!.mappings.map((m) => `${m.canonical} -> ${m.systemField}`).join(", ")}${proposal!.newTasks.length ? `; new task(s): ${proposal!.newTasks.map((t) => t.title).join(", ")}` : ""} (confidence ${confidence.toFixed(2)} < ${config.driftAutoApplyThreshold}). Approve to apply and retry with the same key.`,

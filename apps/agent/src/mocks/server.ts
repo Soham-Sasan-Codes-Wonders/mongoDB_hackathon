@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { V1_SYSTEM_SPECS, type SystemSpec } from "@claims/db";
+import { V1_SYSTEM_SPECS, type SystemSpec } from "../db.ts";
 import { makePdf } from "./pdf.ts";
 import { emptyState, loadState, saveState, type Booking, type InsurerClaim, type MockState, type Reservation, type Sys } from "./state.ts";
 

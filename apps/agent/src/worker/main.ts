@@ -1,4 +1,4 @@
-import { clock, closeDb, leases } from "@claims/db";
+import { clock, closeDb, leases } from "../db.ts";
 import { config } from "../config.ts";
 import { log } from "../log.ts";
 import type { WorkerState } from "./loop.ts";

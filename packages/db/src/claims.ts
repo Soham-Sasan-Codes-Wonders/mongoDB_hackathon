@@ -1,149 +1,109 @@
-import type { ClientSession } from "mongodb";
-import { col } from "./collections.ts";
-import { now } from "./clock.ts";
-import { Claim, MoneyItem, type MoneyItem as MoneyItemT } from "./schemas.ts";
+import type { Document } from "mongodb";
+import { client, collection } from "./database.js";
+import { ClaimSchema, TaskSchema, type Claim, type Counter, type Task } from "./schemas.js";
 
-const zeroCat = () => ({ billed: 0, submitted: 0, paid: 0 });
-export const emptyMoney = () => ({ items: [] as MoneyItemT[], totals: { repair: zeroCat(), rental: zeroCat(), medical: zeroCat() } });
+export async function getClaim(claimId: string): Promise<Claim | null> { return collection<Claim>("claims").findOne({ _id: claimId } as Document); }
+export async function putClaim(claim: Claim): Promise<void> { const parsed = ClaimSchema.parse(claim); await collection<Claim>("claims").replaceOne({ _id: parsed._id }, parsed, { upsert: true }); }
+export async function listClaims(): Promise<Claim[]> { return collection<Claim>("claims").find().sort({ createdAt: -1 }).toArray(); }
+export async function updateCompactSummary(claimId: string, compactSummary: string): Promise<boolean> {
+  if (compactSummary.length > 2000) throw new RangeError("compactSummary must be at most 2,000 characters");
+  return (await collection("claims").updateOne({ _id: claimId } as Document, { $set: { compactSummary, updatedAt: new Date() } })).modifiedCount === 1;
+}
 
+export async function reconcileMoney(claimId: string): Promise<Array<{ itemId: string; kind: string; category: string; billed: number; submitted: number; paid: number; billedToSubmittedGap: number; submittedToPaidGap: number; reason?: string }>> {
+  return collection("claims").aggregate([
+    { $match: { _id: claimId } }, { $unwind: "$money.items" },
+    { $project: { _id: 0, itemId: "$money.items.itemId", kind: "$money.items.kind", category: "$money.items.category", billed: "$money.items.billed", submitted: "$money.items.submitted", paid: "$money.items.paid", reason: "$money.items.reason", billedToSubmittedGap: { $subtract: ["$money.items.billed", "$money.items.submitted"] }, submittedToPaidGap: { $subtract: ["$money.items.submitted", "$money.items.paid"] } } }
+  ]).toArray() as unknown as Array<{ itemId: string; kind: string; category: string; billed: number; submitted: number; paid: number; billedToSubmittedGap: number; submittedToPaidGap: number; reason?: string }>;
+}
+
+export async function getClaimOverview(claimId: string): Promise<Document | null> {
+  const rows = await collection("claims").aggregate([
+    { $match: { _id: claimId } },
+    { $lookup: { from: "tasks", localField: "_id", foreignField: "claimId", as: "tasks" } },
+    { $lookup: { from: "actions", let: { id: "$_id" }, pipeline: [
+      { $match: { $expr: { $eq: ["$claimId", "$$id"] } } }, { $sort: { createdAt: -1, _id: -1 } },
+      { $group: { _id: "$taskId", action: { $first: "$$ROOT" } } }, { $replaceRoot: { newRoot: "$action" } }
+    ], as: "latestActions" } },
+    { $lookup: { from: "approvals", let: { id: "$_id" }, pipeline: [{ $match: { $expr: { $and: [{ $eq: ["$claimId", "$$id"] }, { $eq: ["$status", "pending"] }] } } }], as: "pendingApprovals" } },
+    { $lookup: { from: "timers", let: { id: "$_id" }, pipeline: [{ $match: { $expr: { $and: [{ $eq: ["$claimId", "$$id"] }, { $eq: ["$fired", false] }, { $eq: ["$cancelled", false] }] } } }], as: "openTimers" } },
+    { $project: { latestActions: 1, tasks: 1, pendingApprovals: 1, openTimers: 1, claimant: 1, parties: 1, vehicle: 1, policy: 1, phase: 1, compactSummary: 1, money: 1, createdAt: 1, updatedAt: 1 } }
+  ]).toArray();
+  return rows[0] ?? null;
+}
+
+export async function getActionTimeline(claimId: string): Promise<Document[]> {
+  return collection("actions").aggregate([{ $match: { claimId } }, { $unwind: "$history" }, { $sort: { "history.wallAt": 1 } }, { $project: { _id: 0, actionId: "$_id", taskId: 1, kind: 1, system: 1, idempotencyKey: 1, ...Object.fromEntries(["status", "at", "wallAt", "by", "note"].map((key) => [key, `$history.${key}`])) } }]).toArray();
+}
+
+/* ---------------------------------------------------------------- agent additions */
+
+type MoneyItem = Claim["money"]["items"][number];
+
+/** Next free `CLM-<n>` id (atomic counter in `counters`; skips ids already taken, e.g. the seeded CLM-1042). */
 export async function nextClaimId(): Promise<string> {
-  const res = await (await col.counters()).findOneAndUpdate(
-    { _id: "claim" },
-    { $inc: { seq: 1 } },
-    { upsert: true, returnDocument: "after" },
-  );
-  return `CLM-${1041 + (res?.seq ?? 1)}`;
+  for (;;) {
+    const res = await collection<Counter & Document>("counters").findOneAndUpdate({ _id: "claim" }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: "after" });
+    const id = `CLM-${1041 + (res?.seq ?? 1)}`;
+    if (!(await getClaim(id))) return id;
+  }
 }
 
-export type NewClaim = Omit<Claim, "createdAt" | "createdWallAt" | "money" | "compactSummary" | "phase" | "external" | "facts"> &
-  Partial<Pick<Claim, "phase" | "compactSummary" | "external" | "facts">>;
+/** Insert a validated claim and its seeded tasks in ONE transaction. */
+export async function createClaimWithTasks(claim: Claim, tasks: Task[]): Promise<void> {
+  const parsed = ClaimSchema.parse(claim);
+  const parsedTasks = tasks.map((t) => TaskSchema.parse(t));
+  const session = client.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await collection<Claim>("claims").insertOne(parsed, { session });
+      if (parsedTasks.length) await collection("tasks").insertMany(parsedTasks as unknown as Document[], { session });
+    });
+  } finally {
+    await session.endSession();
+  }
+}
 
-export async function createClaim(c: NewClaim, session?: ClientSession): Promise<Claim> {
-  const doc = Claim.parse({
-    phase: "intake",
-    compactSummary: "",
-    external: {},
-    facts: {},
-    ...c,
-    money: emptyMoney(),
-    createdAt: now(),
-    createdWallAt: new Date(),
+/** `$set` (dot paths allowed, e.g. "external.insurerClaimNo") and optional `$unset`. The validator enforces the shape. */
+export async function updateClaimFields(claimId: string, set: Record<string, unknown>, unset: string[] = []): Promise<void> {
+  await collection("claims").updateOne({ _id: claimId } as Document, {
+    $set: { ...set, updatedAt: new Date() },
+    ...(unset.length ? { $unset: Object.fromEntries(unset.map((k) => [k, ""])) } : {}),
   });
-  await (await col.claims()).insertOne(doc, { session });
-  return doc;
-}
-
-export async function getClaim(claimId: string): Promise<Claim | null> {
-  return (await col.claims()).findOne({ _id: claimId });
-}
-
-/** Shallow $set on a claim (dot paths allowed, e.g. "external.insurerClaimNo"). */
-export async function updateClaim(claimId: string, set: Record<string, unknown>): Promise<void> {
-  await (await col.claims()).updateOne({ _id: claimId }, { $set: set });
-}
-
-/** The ONLY context the agent reloads after a crash. Hard-capped at 2k chars. */
-export async function setCompactSummary(claimId: string, summary: string): Promise<void> {
-  await (await col.claims()).updateOne({ _id: claimId }, { $set: { compactSummary: summary.slice(0, 2000) } });
 }
 
 export async function listActiveClaimIds(): Promise<string[]> {
-  return (await col.claims()).distinct("_id", { phase: { $ne: "closed" } });
+  return (await collection("claims").distinct("_id", { phase: { $ne: "closed" } })) as unknown as string[];
 }
 
-/** Insert or update one money line (by ref). Undefined fields are left as they are. */
-export async function upsertMoneyItem(
-  claimId: string,
-  item: { ref: string; category: MoneyItemT["category"] } & Partial<Pick<MoneyItemT, "billed" | "submitted" | "paid" | "gapReason">>,
-): Promise<void> {
-  const claims = await col.claims();
-  const claim = await claims.findOne({ _id: claimId }, { projection: { "money.items": 1 } });
+/** Insert or update one money line by itemId. Omitted numbers are left as they are; `reason: null` clears it. */
+export async function upsertMoneyItem(claimId: string, item: { itemId: string; kind: MoneyItem["kind"]; category: string; billed?: number; submitted?: number; paid?: number; reason?: string | null }): Promise<void> {
+  const claims = collection<Claim & Document>("claims");
+  const claim = await claims.findOne({ _id: claimId } as Document, { projection: { "money.items": 1 } });
   if (!claim) throw new Error(`claim ${claimId} not found`);
-  const existing = claim.money.items.find((i) => i.ref === item.ref);
-  if (existing) {
+  const exists = claim.money.items.some((i) => i.itemId === item.itemId);
+  if (exists) {
     const set: Record<string, unknown> = {};
-    for (const k of ["billed", "submitted", "paid", "gapReason"] as const) {
-      if (item[k] !== undefined) set[`money.items.$.${k}`] = item[k];
+    const unset: Record<string, ""> = {};
+    for (const k of ["billed", "submitted", "paid"] as const) if (item[k] !== undefined) set[`money.items.$.${k}`] = item[k];
+    if (item.reason) set["money.items.$.reason"] = item.reason;
+    else if (item.reason === null) unset["money.items.$.reason"] = "";
+    if (Object.keys(set).length || Object.keys(unset).length) {
+      await claims.updateOne({ _id: claimId, "money.items.itemId": item.itemId } as Document, { ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) });
     }
-    if (Object.keys(set).length) await claims.updateOne({ _id: claimId, "money.items.ref": item.ref }, { $set: set });
   } else {
-    const full = MoneyItem.parse({ billed: 0, submitted: 0, paid: 0, gapReason: null, ...item });
-    await claims.updateOne({ _id: claimId, "money.items.ref": { $ne: item.ref } }, { $push: { "money.items": full } });
+    const line: MoneyItem = { itemId: item.itemId, kind: item.kind, category: item.category, billed: item.billed ?? 0, submitted: item.submitted ?? 0, paid: item.paid ?? 0, ...(item.reason ? { reason: item.reason } : {}) };
+    await claims.updateOne({ _id: claimId, "money.items.itemId": { $ne: item.itemId } } as Document, { $push: { "money.items": line } } as Document);
   }
 }
 
-/** Recompute claims.money.totals from the line items with an aggregation (never JS arithmetic). */
+/** Recompute `money.totals` (one row per category) from the line items with an aggregation. */
 export async function recomputeMoneyTotals(claimId: string): Promise<Claim["money"]["totals"]> {
-  const claims = await col.claims();
-  const rows = await claims
-    .aggregate<{ _id: string; billed: number; submitted: number; paid: number }>([
-      { $match: { _id: claimId } },
-      { $unwind: "$money.items" },
-      {
-        $group: {
-          _id: "$money.items.category",
-          billed: { $sum: "$money.items.billed" },
-          submitted: { $sum: "$money.items.submitted" },
-          paid: { $sum: "$money.items.paid" },
-        },
-      },
-    ])
-    .toArray();
-  const totals = { repair: zeroCat(), rental: zeroCat(), medical: zeroCat() };
-  for (const r of rows) {
-    const cat = r._id as keyof typeof totals;
-    if (totals[cat]) totals[cat] = { billed: r.billed, submitted: r.submitted, paid: r.paid };
-  }
-  await claims.updateOne({ _id: claimId }, { $set: { "money.totals": totals } });
+  const totals = (await collection("claims").aggregate([
+    { $match: { _id: claimId } }, { $unwind: "$money.items" },
+    { $group: { _id: "$money.items.category", billed: { $sum: "$money.items.billed" }, submitted: { $sum: "$money.items.submitted" }, paid: { $sum: "$money.items.paid" } } },
+    { $project: { _id: 0, category: "$_id", billed: 1, submitted: 1, paid: 1 } }, { $sort: { category: 1 } },
+  ]).toArray()) as Claim["money"]["totals"];
+  await collection("claims").updateOne({ _id: claimId } as Document, { $set: { "money.totals": totals } });
   return totals;
-}
-
-export interface MoneyGap {
-  ref: string;
-  category: string;
-  billed: number;
-  submitted: number;
-  paid: number;
-  billedMinusSubmitted: number;
-  submittedMinusPaid: number;
-  gapReason: string | null;
-  explained: boolean;
-}
-
-/**
- * Money reconciliation as an aggregation pipeline: billed = submitted = paid per line item,
- * or the gap carries a recorded reason. Returns every gap and whether any is unexplained.
- */
-export async function reconcileMoney(claimId: string): Promise<{ balanced: boolean; gaps: MoneyGap[]; unexplained: MoneyGap[]; itemCount: number }> {
-  const claims = await col.claims();
-  const [res] = await claims
-    .aggregate<{ itemCount: number; gaps: MoneyGap[] }>([
-      { $match: { _id: claimId } },
-      { $unwind: "$money.items" },
-      { $replaceWith: "$money.items" },
-      {
-        $set: {
-          billedMinusSubmitted: { $round: [{ $subtract: ["$billed", "$submitted"] }, 2] },
-          submittedMinusPaid: { $round: [{ $subtract: ["$submitted", "$paid"] }, 2] },
-          gapReason: { $ifNull: ["$gapReason", null] },
-        },
-      },
-      {
-        $set: {
-          hasGap: { $or: [{ $ne: ["$billedMinusSubmitted", 0] }, { $ne: ["$submittedMinusPaid", 0] }] },
-          explained: { $gt: [{ $strLenCP: { $ifNull: ["$gapReason", ""] } }, 0] },
-        },
-      },
-      {
-        $facet: {
-          count: [{ $count: "n" }],
-          gaps: [{ $match: { hasGap: true } }, { $project: { _id: 0, hasGap: 0 } }, { $sort: { ref: 1 } }],
-        },
-      },
-      { $project: { itemCount: { $ifNull: [{ $first: "$count.n" }, 0] }, gaps: 1 } },
-    ])
-    .toArray();
-  const gaps = res?.gaps ?? [];
-  const unexplained = gaps.filter((g) => !g.explained);
-  return { balanced: unexplained.length === 0, gaps, unexplained, itemCount: res?.itemCount ?? 0 };
 }

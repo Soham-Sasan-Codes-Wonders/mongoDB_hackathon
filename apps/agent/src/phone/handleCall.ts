@@ -1,4 +1,4 @@
-import { approvals, clock, experiences, observations, tasks, timers, type ObservationDoc } from "@claims/db";
+import { approvals, clock, experiences, observations, tasks, timers, type ObservationDoc } from "../db.ts";
 import { getter } from "../executor/index.ts";
 import { reads } from "../executor/adapters.ts";
 import { interpretCall, type CallItem } from "../llm/jobs.ts";

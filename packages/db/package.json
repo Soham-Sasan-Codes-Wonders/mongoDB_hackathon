@@ -1,28 +1,36 @@
 {
-  "name": "@claims/db",
-  "version": "0.1.0",
+  "name": "@claim-coordinator/db",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
-    "setup": "tsx scripts/setup.ts",
-    "seed": "tsx scripts/seed.ts",
-    "reset": "tsx scripts/reset.ts",
-    "smoke": "tsx scripts/smoke.ts",
-    "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "build": "tsc -p tsconfig.json",
+    "setup": "tsx src/scripts/setup.ts",
+    "seed": "tsx src/scripts/seed.ts",
+    "reset": "tsx src/scripts/reset.ts",
+    "smoke": "tsx src/scripts/smoke.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "dotenv": "^18.0.10",
-    "mongodb": "^7.9.0",
-    "zod": "^4.6.7"
+    "dotenv": "^16.6.1",
+    "mongodb": "^6.20.0",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
-    "@types/node": "^26.6.6",
-    "tsx": "^4.23.15",
-    "typescript": "^7.0.2",
-    "vitest": "^5.1.0"
+    "@types/node": "^22.19.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
   }
 }

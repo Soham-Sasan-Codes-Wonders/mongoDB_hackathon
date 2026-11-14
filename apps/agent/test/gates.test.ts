@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getApproval = vi.fn();
 const transitionAction = vi.fn();
-vi.mock("@claims/db", async (orig) => {
-  const real = await orig<typeof import("@claims/db")>();
+vi.mock("../src/db.ts", async (orig) => {
+  const real = await orig<typeof import("../src/db.ts")>();
   return {
     ...real,
     approvals: { ...real.approvals, getApproval: (...a: unknown[]) => getApproval(...a) },
@@ -30,22 +30,23 @@ describe("assertExecutable (code, not a prompt)", () => {
     }
   });
   it("refuses a gated action without an approval document", () => {
-    expect(() => assertExecutable(action({ gate: "settlement_acceptance", status: "approved" }), null)).toThrow(/no approval/);
+    expect(() => assertExecutable(action({ gate: "accept_settlement", status: "approved" }), null)).toThrow(/no approval/);
   });
   it("refuses a gated action whose approval is pending or declined", () => {
-    expect(() => assertExecutable(action({ gate: "settlement_acceptance", status: "approved" }), approval("pending"))).toThrow(/pending/);
-    expect(() => assertExecutable(action({ gate: "settlement_acceptance", status: "approved" }), approval("declined"))).toThrow(/declined/);
+    expect(() => assertExecutable(action({ gate: "accept_settlement", status: "approved" }), approval("pending"))).toThrow(/pending/);
+    expect(() => assertExecutable(action({ gate: "accept_settlement", status: "approved" }), approval("declined"))).toThrow(/declined/);
   });
   it("refuses an approval that belongs to another action", () => {
     expect(() => assertExecutable(action({ gate: "sign_release", status: "approved" }), approval("approved", new ObjectId()))).toThrow(/another action/);
   });
   it("allows a gated action once its own approval is approved", () => {
-    expect(() => assertExecutable(action({ gate: "settlement_acceptance", status: "approved" }), approval("approved"))).not.toThrow();
+    expect(() => assertExecutable(action({ gate: "accept_settlement", status: "approved" }), approval("approved"))).not.toThrow();
   });
-  it("retries only sent/acknowledged actions, and still checks the gate", () => {
+  it("retries only sent/acknowledged/failed actions, and still checks the gate", () => {
     expect(() => assertExecutable(action({ status: "acknowledged" }), null, "retry")).not.toThrow();
+    expect(() => assertExecutable(action({ status: "failed" }), null, "retry")).not.toThrow();
     expect(() => assertExecutable(action({ status: "planned" }), null, "retry")).toThrow(GateError);
-    expect(() => assertExecutable(action({ status: "sent", gate: "settlement_acceptance" }), approval("declined"), "retry")).toThrow(GateError);
+    expect(() => assertExecutable(action({ status: "sent", gate: "accept_settlement" }), approval("declined"), "retry")).toThrow(GateError);
   });
 });
 
@@ -57,14 +58,14 @@ describe("execute() enforces the gate before any side effect", () => {
   it("throws GateError and never transitions or sends for an unapproved gated action", async () => {
     getApproval.mockResolvedValue(approval("pending"));
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    await expect(execute(action({ gate: "settlement_acceptance", status: "approved", approvalId: String(new ObjectId()) }))).rejects.toBeInstanceOf(GateError);
+    await expect(execute(action({ gate: "accept_settlement", status: "approved", approvalId: String(new ObjectId()) }))).rejects.toBeInstanceOf(GateError);
     expect(transitionAction).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
   it("throws for awaiting_approval even if someone approved the doc but the agent hasn't moved the action", async () => {
     getApproval.mockResolvedValue(approval("approved"));
-    await expect(execute(action({ gate: "settlement_acceptance", status: "awaiting_approval", approvalId: "x".repeat(24) }))).rejects.toBeInstanceOf(GateError);
+    await expect(execute(action({ gate: "accept_settlement", status: "awaiting_approval", approvalId: "x".repeat(24) }))).rejects.toBeInstanceOf(GateError);
     expect(transitionAction).not.toHaveBeenCalled();
   });
   it("retry() refuses a confirmed action", async () => {

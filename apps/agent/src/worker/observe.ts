@@ -1,7 +1,7 @@
 import {
   actions, approvals, claims, clock, mintIdempotencyKey, observations, planTaskWithAction, tasks, timers,
   type ActionDoc, type ObservationDoc, type TimerDoc,
-} from "@claims/db";
+} from "../db.ts";
 import { config } from "../config.ts";
 import { execute } from "../executor/index.ts";
 import { interpretInboundMessage, writeFollowUp } from "../llm/jobs.ts";
@@ -193,11 +193,11 @@ async function chase(c: ClaimCtx, timer: TimerDoc) {
   if (target.system === "claimant") {
     await messageClaimant(c, `Reminder: ${target.purpose}.`, { taskId: t.taskId });
   } else if (target.ref) {
-    const f = await writeFollowUp({ to: target.system, purpose: target.purpose, facts: { claimRef: target.ref, claimId: c.claimId, waitingSince: t.updatedAt.toISOString() }, escalationLevel: level });
+    const f = await writeFollowUp({ to: target.system, purpose: target.purpose, facts: { claimRef: target.ref, claimId: c.claimId, waitingSince: (t.updatedAt ?? t.createdAt ?? clock.now()).toISOString() }, escalationLevel: level });
     if (!f.ok) await llmReview(c, t, "writeFollowUp", f, "send no follow-up this time");
     else {
       const attempt = (await actions.countActionsForTask(c.claimId, t.taskId, "send_message")) + 1;
-      const { action } = await planTaskWithAction(null, { claimId: c.claimId, taskId: t.taskId, status: t.status, note: `chase ${target.system} (level ${level})`, by: c.workerId }, {
+      const { action } = await planTaskWithAction({ claimId: c.claimId, taskId: t.taskId, status: t.status, note: `chase ${target.system} (level ${level})`, by: c.workerId }, {
         claimId: c.claimId,
         taskId: t.taskId,
         system: target.system,
@@ -207,7 +207,6 @@ async function chase(c: ClaimCtx, timer: TimerDoc) {
         expectedEffect: { messageStored: true },
         verifyBy: "readback",
         deadline: new Date(clock.nowMs() + config.actionDeadlineSim),
-        by: c.workerId,
       });
       await handleOutcome(c, await execute(action, c.workerId));
     }
@@ -232,8 +231,8 @@ async function onTimer(c: ClaimCtx, timer: TimerDoc) {
       const t12 = await tasks.getTask(c.claimId, "T12");
       if (!t12 || t11?.status === "confirmed" || ["confirmed", "closed_by_human"].includes(t12.status)) return;
       await tasks.updateTaskFields(c.claimId, "T12", { triggeredAt: clock.now() });
-      await tasks.setTaskStatus(c.claimId, "T12", "pending", { by: c.workerId, note: `rental_expiring: ends ${timer.params.endDate}, repair not ready` });
-      c.event(`rental ends ${timer.params.endDate} and the repair isn't ready: T12 armed`);
+      await tasks.setTaskStatus(c.claimId, "T12", "pending", { by: c.workerId, note: `rental_expiring: ends ${timer.params?.endDate}, repair not ready` });
+      c.event(`rental ends ${timer.params?.endDate} and the repair isn't ready: T12 armed`);
       return;
     }
     case "claimant_reminder": {
@@ -248,7 +247,7 @@ async function onTimer(c: ClaimCtx, timer: TimerDoc) {
       return chase(c, timer);
     }
     case "promise_check":
-      return runPromiseCheck(c, timer.params);
+      return runPromiseCheck(c, timer.params ?? {});
   }
 }
 

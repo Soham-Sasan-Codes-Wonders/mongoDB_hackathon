@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claim Coordinator Agent</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">MongoDB Hackathon</p>
+          <h1>Claim Coordinator Agent</h1>
+        </div>
+        <div class="pill" id="phase-pill">Intake</div>
+      </header>
+
+      <main class="layout">
+        <section class="panel controls-panel">
+          <h2>Simulate workflow</h2>
+          <div class="button-grid" id="event-buttons"></div>
+        </section>
+
+        <section class="panel summary-panel">
+          <h2>Claim snapshot</h2>
+          <dl id="claim-summary"></dl>
+        </section>
+
+        <section class="panel wide-panel">
+          <h2>Tasks</h2>
+          <div id="tasks"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <h2>Actions</h2>
+          <div id="actions"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <h2>Observations</h2>
+          <div id="observations"></div>
+        </section>
+
+        <section class="panel wide-panel">
+          <h2>Event log</h2>
+          <div id="event-log"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

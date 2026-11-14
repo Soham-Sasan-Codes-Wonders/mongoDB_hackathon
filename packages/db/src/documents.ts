@@ -1,105 +1,45 @@
-import { GridFSBucket, ObjectId, type WithId } from "mongodb";
-import { col } from "./collections.ts";
-import { now } from "./clock.ts";
-import { getDb, atlasSearchAvailable, setAtlasSearchAvailable } from "./env.ts";
-import { DocumentMeta } from "./schemas.ts";
+import { GridFSBucket, ObjectId, type Document } from "mongodb";
+import { db, collection } from "./database.js";
+import type { DocumentMetadata } from "./schemas.js";
 
-export const DOCUMENTS_TEXT_INDEX = "documents_text";
-
-async function bucket() {
-  return new GridFSBucket(await getDb(), { bucketName: "files" });
+const bucket = new GridFSBucket(db, { bucketName: "files" });
+export async function uploadDocument(input: { claimId: string; docType: DocumentMetadata["docType"]; filename: string; bytes: Buffer; contentType: string; extractedText?: string; source: string }): Promise<string> {
+  const upload = bucket.openUploadStream(input.filename, { contentType: input.contentType, metadata: { claimId: input.claimId, docType: input.docType } });
+  await new Promise<void>((resolve, reject) => { upload.once("error", reject); upload.once("finish", () => resolve()); upload.end(input.bytes); });
+  const metadata = await collection("documents").insertOne({ claimId: input.claimId, docType: input.docType, gridfsId: upload.id, extractedText: input.extractedText ?? "", source: input.source, createdAt: new Date() });
+  return metadata.insertedId.toString();
 }
-
-export interface NewDocument {
-  claimId: string;
-  docType: DocumentMeta["docType"];
-  source: string;
-  extractedText?: string;
-  filename?: string;
-  contentType?: string;
-  data?: Buffer;
-  meta?: Record<string, unknown>;
-}
-
-/** Store a file in GridFS (bucket `files`) plus its `documents` metadata row. Data is optional. */
-export async function putDocument(d: NewDocument): Promise<string> {
-  let gridfsId: ObjectId | null = null;
-  if (d.data) {
-    const b = await bucket();
-    gridfsId = await new Promise<ObjectId>((resolve, reject) => {
-      const up = b.openUploadStream(d.filename ?? `${d.docType}.bin`, { metadata: { claimId: d.claimId, docType: d.docType, contentType: d.contentType } });
-      up.on("error", reject);
-      up.on("finish", () => resolve(up.id as ObjectId));
-      up.end(d.data);
-    });
-  }
-  const doc = DocumentMeta.parse({
-    claimId: d.claimId,
-    docType: d.docType,
-    gridfsId,
-    filename: d.filename ?? null,
-    contentType: d.contentType ?? null,
-    extractedText: d.extractedText ?? "",
-    source: d.source,
-    meta: d.meta ?? {},
-    createdAt: now(),
-  });
-  const res = await (await col.documents()).insertOne(doc);
-  return String(res.insertedId);
-}
-
-export async function getFile(gridfsId: string | ObjectId): Promise<Buffer> {
-  const b = await bucket();
+export async function downloadDocument(gridfsId: string | ObjectId): Promise<Buffer> {
+  const id = gridfsId instanceof ObjectId ? gridfsId : new ObjectId(gridfsId);
   const chunks: Buffer[] = [];
-  return new Promise((resolve, reject) => {
-    b.openDownloadStream(typeof gridfsId === "string" ? new ObjectId(gridfsId) : gridfsId)
-      .on("data", (c: Buffer) => chunks.push(c))
-      .on("error", reject)
-      .on("end", () => resolve(Buffer.concat(chunks)));
-  });
+  await new Promise<void>((resolve, reject) => { bucket.openDownloadStream(id).on("data", (chunk: Buffer) => chunks.push(chunk)).once("error", reject).once("end", resolve); });
+  return Buffer.concat(chunks);
 }
-
-export async function listDocuments(claimId: string, docType?: DocumentMeta["docType"]): Promise<WithId<DocumentMeta>[]> {
-  return (await col.documents()).find({ claimId, ...(docType ? { docType } : {}) }).sort({ createdAt: 1 }).toArray();
-}
-
-export async function findDocumentByMeta(claimId: string, key: string, value: unknown): Promise<WithId<DocumentMeta> | null> {
-  return (await col.documents()).findOne({ claimId, [`meta.${key}`]: value });
-}
-
-let warned = false;
-/** Atlas Search full-text over extractedText (index `documents_text`); regex fallback locally. */
-export async function searchDocuments(claimId: string, query: string, limit = 20) {
-  const docs = await col.documents();
-  if (atlasSearchAvailable() !== false) {
-    try {
-      const rows = await docs
-        .aggregate([
-          {
-            $search: {
-              index: DOCUMENTS_TEXT_INDEX,
-              compound: {
-                must: [{ text: { query, path: "extractedText" } }],
-                filter: [{ equals: { path: "claimId", value: claimId } }],
-              },
-              highlight: { path: "extractedText" },
-            },
-          },
-          { $limit: limit },
-          { $set: { score: { $meta: "searchScore" }, highlights: { $meta: "searchHighlights" } } },
-        ])
-        .toArray();
-      setAtlasSearchAvailable(true);
-      return rows;
-    } catch (e) {
-      if (atlasSearchAvailable() === true) throw e;
-      setAtlasSearchAvailable(false);
-      if (!warned) {
-        console.warn("[db] $search unavailable: using regex fallback for searchDocuments");
-        warned = true;
-      }
-    }
+export async function searchDocuments(claimId: string, query: string): Promise<Document[]> {
+  try {
+    return await collection("documents").aggregate([
+      { $search: { index: "documents_text", compound: { must: [{ text: { query, path: "extractedText" } }], filter: [{ equals: { path: "claimId", value: claimId } }] } } },
+      { $limit: 20 }, { $project: { claimId: 1, docType: 1, gridfsId: 1, extractedText: 1, source: 1, score: { $meta: "searchScore" } } }
+    ]).toArray();
+  } catch (error) {
+    // Local replica set (no Atlas Search): plain regex so dev still works. Atlas is always tried first.
+    if (!/only allowed on MongoDB Atlas|Unrecognized pipeline stage|not supported|SearchNotEnabled/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    const rx = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    return collection("documents").find({ claimId, extractedText: rx }).limit(20).toArray();
   }
-  const rx = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-  return docs.find({ claimId, extractedText: rx }).limit(limit).toArray();
+}
+export async function deleteClaimDocuments(claimId: string): Promise<number> {
+  const docs = await collection<DocumentMetadata & Document>("documents").find({ claimId }).toArray();
+  await Promise.all(docs.map((doc) => bucket.delete(doc.gridfsId instanceof ObjectId ? doc.gridfsId : new ObjectId(String(doc.gridfsId)))));
+  return (await collection("documents").deleteMany({ claimId })).deletedCount;
+}
+
+/* ---------------------------------------------------------------- agent additions */
+
+export async function listDocuments(claimId: string, docType?: DocumentMetadata["docType"]): Promise<(DocumentMetadata & { _id: ObjectId })[]> {
+  return collection<DocumentMetadata & { _id: ObjectId }>("documents").find({ claimId, ...(docType ? { docType } : {}) }).sort({ createdAt: 1 }).toArray();
+}
+export async function getDocumentMeta(documentId: string | ObjectId): Promise<(DocumentMetadata & { _id: ObjectId }) | null> {
+  const id = documentId instanceof ObjectId ? documentId : new ObjectId(documentId);
+  return collection<DocumentMetadata & { _id: ObjectId }>("documents").findOne({ _id: id });
 }

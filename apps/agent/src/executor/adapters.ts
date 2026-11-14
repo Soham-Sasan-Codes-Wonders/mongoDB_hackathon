@@ -1,4 +1,4 @@
-import type { ActionDoc, Claim } from "@claims/db";
+import type { ActionDoc, Claim } from "../db.ts";
 
 /**
  * One adapter per outside system. Each action `kind` knows how to build its HTTP request (from the

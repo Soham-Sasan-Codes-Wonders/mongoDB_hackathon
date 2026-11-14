@@ -1,4 +1,6 @@
-import type { NewTask } from "@claims/db";
+import type { TaskDoc } from "../db.ts";
+
+export type NewTask = Pick<TaskDoc, "claimId" | "taskId" | "type" | "title" | "track" | "dependsOn"> & { isWait?: boolean; trigger?: string };
 
 /**
  * The doc's task graph (T1–T18). T13/T14 are not seeded: one copy of each is created per clinic

@@ -1,4 +1,4 @@
-import { clock, seedDatabase, setup } from "@claims/db";
+import { clock, setup } from "./db.ts";
 import { config } from "./config.ts";
 import { buildControlServer } from "./control/server.ts";
 import { Supervisor } from "./control/supervisor.ts";
@@ -7,8 +7,8 @@ import { startMocks } from "./mocks/main.ts";
 
 /** `pnpm --filter agent dev`: mocks (:4000) + control/webhooks/phone (:4100) + supervised worker(s). */
 async function main() {
-  await setup.setupDatabase({ waitForSearch: false });
-  await seedDatabase((m) => log("seed", m));
+  // Collections, validators, indexes and the 3 search indexes (idempotent). Seed data comes from `pnpm db:seed`.
+  await setup.setupDatabase();
   await clock.initClock();
   await startMocks();
   const sup = new Supervisor(config.workers);

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { claims, contacts, documents, observations } from "@claims/db";
+import { claims, contacts, documents, observations } from "../db.ts";
 import { config } from "../config.ts";
 import { log } from "../log.ts";
 import { verifyElevenLabsSignature } from "./hmac.ts";
@@ -13,12 +13,15 @@ const obj = (x: unknown) => (x && typeof x === "object" ? (x as Record<string, u
 
 /** The trust table: who is calling decides only how the voice agent talks, never what is true. */
 export async function lookupCaller(callerId: string) {
-  const c = await contacts.findByPhone(callerId); // one indexed query, no LLM
+  const c = await contacts.findByPhone(callerId); // one indexed query (unique index on phone), no LLM
   if (!c) return { caller_name: "", caller_role: "unknown", claim_reference: "", trust_level: "unknown", claimant_first_name: "", contact: null };
   const claimId = c.claimIds.at(-1) ?? "";
   if (c.isCompanyMainLine) return { caller_name: c.company ?? c.name, caller_role: c.role, claim_reference: c.claimIds.length === 1 ? claimId : "", trust_level: "company_line", claimant_first_name: "", contact: c };
   let first = "";
-  if (claimId) first = (await claims.getClaim(claimId))?.claimant.firstName ?? "";
+  if (claimId) {
+    const cl = await claims.getClaim(claimId);
+    first = cl?.claimant.firstName ?? cl?.claimant.name.split(/\s+/)[0] ?? "";
+  }
   return { caller_name: c.name, caller_role: c.role, claim_reference: claimId, trust_level: "known", claimant_first_name: first, contact: c };
 }
 
@@ -78,7 +81,7 @@ export function registerPhoneRoutes(app: FastifyInstance) {
       processed: !claimId, // a call we can't tie to a claim is stored for an operator, not processed by the loop
       note: claimId ? undefined : "no claim matched (unknown caller or reference)",
     });
-    if (claimId) await documents.putDocument({ claimId, docType: "call_transcript", source: "phone", extractedText: transcriptText, meta: { observationId: obsId, conversationId: data.conversation_id ?? null, trust } });
+    if (claimId) await documents.putDocument({ claimId, docType: "call_transcript", source: "phone", filename: `call-${String(data.conversation_id ?? obsId)}.txt`, contentType: "text/plain", extractedText: transcriptText });
     log("phone", `post-call stored: ${caller.caller_name || callerNumber || "unknown"} (${trust}) -> ${claimId || "unmatched"} [claimed, not confirmed]`);
     return { ok: true, observationId: obsId, claimId: claimId || null };
   });

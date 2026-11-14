@@ -1,4 +1,4 @@
-import { actions, claims, experiences, observations, tasks, type ActionDoc } from "@claims/db";
+import { actions, claims, experiences, observations, tasks, type ActionDoc } from "../db.ts";
 import { classifyRejection } from "../llm/jobs.ts";
 import { llmReview } from "../worker/handlers.ts";
 import { messageClaimant, type ClaimCtx } from "../worker/context.ts";

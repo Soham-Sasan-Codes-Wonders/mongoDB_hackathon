@@ -1,15 +1,36 @@
 {
   "name": "claim-coordinator",
+  "version": "1.0.0",
   "private": true,
-  "type": "module",
-  "packageManager": "pnpm@9.15.9",
-  "engines": { "node": ">=22" },
+  "main": "src/server.js",
   "scripts": {
-    "db:setup": "pnpm --filter @claims/db run setup",
-    "db:seed": "pnpm --filter @claims/db run seed",
-    "db:reset": "pnpm --filter @claims/db run reset",
-    "db:smoke": "pnpm --filter @claims/db run smoke",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "db:setup": "pnpm --filter @claim-coordinator/db run setup",
+    "db:seed": "pnpm --filter @claim-coordinator/db run seed",
+    "db:reset": "pnpm --filter @claim-coordinator/db run reset",
+    "db:smoke": "pnpm --filter @claim-coordinator/db run smoke",
+    "db:build": "pnpm --filter @claim-coordinator/db run build",
+    "agent:dev": "pnpm --filter agent dev",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Soham-Sasan-Codes-Wonders/mongoDB_hackathon.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Soham-Sasan-Codes-Wonders/mongoDB_hackathon/issues"
+  },
+  "homepage": "https://github.com/Soham-Sasan-Codes-Wonders/mongoDB_hackathon#readme",
+  "description": "Claim Coordinator hackathon workspace",
+  "dependencies": {
+    "express": "^5.3.0"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
   }
 }

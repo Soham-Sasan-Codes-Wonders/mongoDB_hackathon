@@ -16,7 +16,10 @@
     "demo:rejection": "tsx scripts/demo-rejection.ts",
     "demo:all": "tsx scripts/demo-all.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "predev": "pnpm --filter @claim-coordinator/db run build",
+    "pretypecheck": "pnpm --filter @claim-coordinator/db run build",
+    "pretest": "pnpm --filter @claim-coordinator/db run build"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
@@ -26,9 +29,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
-    "@claims/db": "workspace:^",
     "fastify": "^5.12.8",
-    "mongodb": "^7.9.0",
-    "zod": "^4.6.7"
+    "mongodb": "^6.20.0",
+    "zod": "^4.6.7",
+    "@claim-coordinator/db": "workspace:*"
   }
 }

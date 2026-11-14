@@ -1,4 +1,4 @@
-import { actions, approvals, claims, clock, closeDb, observations, readModels, setup, tasks, type ApprovalDoc } from "@claims/db";
+import { actions, approvals, claims, clock, closeDb, contacts, observations, setup, tasks, type ApprovalDoc } from "../src/db.ts";
 import { config } from "../src/config.ts";
 
 export const MOCKS = config.mocksUrl;
@@ -26,7 +26,7 @@ export async function freshWorld(opts: { claimDayMs?: number } = {}) {
   const h = await api("GET", `${CONTROL}/health`).catch(() => null);
   if (!h || h.status !== 200) throw new DemoFailure(`agent control API not reachable at ${CONTROL}. Start it with: pnpm --filter agent dev`);
   await clock.initClock();
-  await setup.resetDemoData();
+  await setup.resetDemoData(); // claim data, profile versions > 1, claim-made experiences; restarts the clock
   await api("POST", `${MOCKS}/chaos/reset`, {});
   await api("POST", `${MOCKS}/chaos/rental-webhook-drop-rate`, { rate: 0.5 });
   if (opts.claimDayMs) await clock.setSpeed(clock.DAY / opts.claimDayMs);
@@ -93,15 +93,15 @@ export async function printHistory(claimId: string, filter?: (a: { taskId: strin
   const list = (await actions.listActions(claimId)).filter((a) => (filter ? filter(a) : true));
   console.log(`\n   Action history for ${claimId}:`);
   for (const a of list) {
-    console.log(`   ${a.taskId.padEnd(16)} ${(a.system + "." + a.kind).padEnd(36)} key=${a.idempotencyKey}${a.supersedes ? ` supersedes=${a.supersedes.slice(-6)}` : ""}`);
+    console.log(`   ${a.taskId.padEnd(16)} ${(a.system + "." + a.kind).padEnd(36)} key=${a.idempotencyKey}${a.supersedes ? ` supersedes=${String(a.supersedes.actionId).slice(-6)}` : ""}`);
     for (const h of a.history) console.log(`      ${h.status.padEnd(18)} sim ${h.at.toISOString().slice(5, 16)}  by ${h.by.padEnd(18)} ${h.note ?? ""}`);
   }
 }
 
 export async function printTasks(claimId: string) {
-  const ov = await readModels.getClaimOverview(claimId);
+  const all = await tasks.listTasks(claimId);
   console.log(`\n   Tasks for ${claimId}:`);
-  for (const t of ov?.tasks ?? []) console.log(`   ${t.taskId.padEnd(16)} ${t.status.padEnd(18)} ${t.title}${t.dependsOn.length ? `  <- ${t.dependsOn.join(",")}` : ""}`);
+  for (const t of all) console.log(`   ${t.taskId.padEnd(16)} ${t.status.padEnd(18)} ${t.title}${t.dependsOn.length ? `  <- ${t.dependsOn.join(",")}` : ""}`);
 }
 
 export async function run(name: string, fn: () => Promise<void>) {
@@ -119,4 +119,4 @@ export async function run(name: string, fn: () => Promise<void>) {
   }
 }
 
-export { actions, approvals, claims, clock, observations, readModels, tasks };
+export { actions, approvals, claims, clock, contacts, observations, tasks };

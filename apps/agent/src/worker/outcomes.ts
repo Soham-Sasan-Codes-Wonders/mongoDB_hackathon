@@ -1,4 +1,4 @@
-import { actions, approvals, clock, tasks, timers, type ActionDoc, type OutsideSystem, type TaskDoc } from "@claims/db";
+import { actions, approvals, clock, tasks, timers, type ActionDoc, type OutsideSystem, type TaskDoc } from "../db.ts";
 import { config } from "../config.ts";
 import { readBack, retry, type ExecOutcome } from "../executor/index.ts";
 import { errMsg } from "../log.ts";

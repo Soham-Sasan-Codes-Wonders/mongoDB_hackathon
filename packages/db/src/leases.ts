@@ -1,49 +1,39 @@
-import { col } from "./collections.ts";
-import type { Lease } from "./schemas.ts";
+import { type Document } from "mongodb";
+import { collection, wallNow } from "./database.js";
+import type { Lease } from "./schemas.js";
 
-/**
- * Leases use WALL-clock time (they guard real processes). Takeover checks expiresAt directly;
- * the TTL index only cleans up (M0 TTL runs about once a minute).
- */
-export async function acquireLease(claimId: string, workerId: string, ttlMs: number): Promise<boolean> {
-  const leases = await col.leases();
-  const nowWall = new Date();
-  const expiresAt = new Date(nowWall.getTime() + ttlMs);
+export async function acquireLease(claimId: string, workerId: string, ttlMs: number): Promise<Lease | null> {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw new RangeError("ttlMs must be positive");
+  const now = wallNow();
   try {
-    const res = await leases.findOneAndUpdate(
-      { _id: claimId, $or: [{ workerId }, { expiresAt: { $lt: nowWall } }] },
-      { $set: { workerId, expiresAt }, $setOnInsert: { acquiredAt: nowWall } },
-      { upsert: true, returnDocument: "after" },
-    );
-    return res?.workerId === workerId;
-  } catch (e: unknown) {
-    // Duplicate key: another worker holds a live lease (the filter didn't match, the upsert collided).
-    if ((e as { code?: number }).code === 11000) return false;
-    throw e;
+    return await collection("leases").findOneAndUpdate(
+      { _id: claimId, $or: [{ workerId }, { expiresAt: { $lt: now } }] } as Document,
+      { $set: { workerId, expiresAt: new Date(now.getTime() + ttlMs) } },
+      { upsert: true, returnDocument: "after", includeResultMetadata: false }
+    ) as Lease | null;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === 11000) return null;
+    throw error;
   }
 }
 
 export async function renewLease(claimId: string, workerId: string, ttlMs: number): Promise<boolean> {
-  const res = await (await col.leases()).updateOne(
-    { _id: claimId, workerId },
-    { $set: { expiresAt: new Date(Date.now() + ttlMs) } },
-  );
-  return res.matchedCount === 1;
+  const now = wallNow();
+  return (await collection("leases").updateOne({ _id: claimId, workerId, expiresAt: { $gte: now } } as Document, { $set: { expiresAt: new Date(now.getTime() + ttlMs) } })).modifiedCount === 1;
+}
+export async function releaseLease(claimId: string, workerId: string): Promise<boolean> {
+  return (await collection("leases").deleteOne({ _id: claimId, workerId } as Document)).deletedCount === 1;
 }
 
-export async function releaseLease(claimId: string, workerId: string): Promise<void> {
-  await (await col.leases()).deleteOne({ _id: claimId, workerId });
-}
+/* ---------------------------------------------------------------- agent additions */
 
 export async function getLease(claimId: string): Promise<Lease | null> {
-  return (await col.leases()).findOne({ _id: claimId });
+  return collection<Lease & Document>("leases").findOne({ _id: claimId } as Document);
 }
-
 export async function listLeases(): Promise<Lease[]> {
-  return (await col.leases()).find({}).toArray();
+  return collection<Lease & Document>("leases").find({}).toArray();
 }
-
-/** Leases whose holder stopped renewing (the sweeper's takeover candidates). */
+/** Leases whose holder stopped renewing: the sweeper's takeover candidates (checks expiresAt directly; TTL only cleans up). */
 export async function expiredLeases(): Promise<Lease[]> {
-  return (await col.leases()).find({ expiresAt: { $lt: new Date() } }).toArray();
+  return collection<Lease & Document>("leases").find({ expiresAt: { $lt: wallNow() } }).toArray();
 }

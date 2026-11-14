@@ -1,4 +1,4 @@
-import { actions, experiences, tasks } from "@claims/db";
+import { actions, experiences, tasks } from "../db.ts";
 import { readBack } from "../executor/index.ts";
 import type { ClaimCtx } from "../worker/context.ts";
 

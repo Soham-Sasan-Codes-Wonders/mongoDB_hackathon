@@ -1,8 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import {
-  claims, clock, contacts, DEMO_CONTACTS, leases, observations, tasks, withTransaction,
-} from "@claims/db";
+import { claims, clock, contacts, leases, observations, tasks } from "../db.ts";
 import { config } from "../config.ts";
 import { errMsg, log } from "../log.ts";
 import { registerPhoneRoutes } from "../phone/routes.ts";
@@ -50,23 +48,29 @@ export function buildControlServer(sup: Supervisor | null): FastifyInstance {
     const claimId = await claims.nextClaimId();
     const od = f.accident.otherDriver;
     const otherDriver = !od ? null : typeof od === "string" ? { name: od, plate: null, insurer: null } : { name: od.name ?? null, plate: od.plate ?? null, insurer: od.insurer ?? null };
-    await withTransaction(async (session) => {
-      await claims.createClaim(
-        {
-          _id: claimId,
-          claimant: { name: f.claimant.name, firstName: f.claimant.name.split(/\s+/)[0]!, phone: f.claimant.phone, email: f.claimant.email ?? null },
-          parties: { otherDriver },
-          vehicle: { vin: f.vehicle.vin, make: f.vehicle.make ?? null, model: f.vehicle.model ?? null, year: f.vehicle.year ?? null, plate: f.vehicle.plate ?? null },
-          policy: { number: f.policyNumber, insurer: f.insurer, rentalDailyLimit: null, rentalMaxDays: null, deductible: null },
-          accident: { date: f.accident.date, place: f.accident.place, description: f.accident.description, policeReportNumber: f.accident.policeReportNumber ?? null, injuries: f.accident.injuries },
-          facts: { photos: f.photos },
-        },
-        session,
-      );
-      await tasks.insertTasks(seedTasks(claimId), session);
-    });
-    await contacts.upsertContact({ phone: f.claimant.phone, name: f.claimant.name, company: null, role: "claimant", claimIds: [claimId], trust: "known", isCompanyMainLine: false });
-    for (const c of DEMO_CONTACTS) await contacts.upsertContact({ ...c, claimIds: [claimId] });
+    const at = clock.now();
+    // Claim + its 18-task graph in ONE transaction (packages/db createClaimWithTasks).
+    await claims.createClaimWithTasks(
+      {
+        _id: claimId,
+        claimant: { name: f.claimant.name, firstName: f.claimant.name.split(/\s+/)[0]!, phone: f.claimant.phone, ...(f.claimant.email ? { email: f.claimant.email } : {}) },
+        parties: { claimant: f.claimant.name, insurer: f.insurer },
+        vehicle: { make: f.vehicle.make ?? "Unknown", model: f.vehicle.model ?? "Unknown", vin: f.vehicle.vin, ...(f.vehicle.year ? { year: f.vehicle.year } : {}), ...(f.vehicle.plate ? { licencePlate: f.vehicle.plate } : {}) },
+        // Rental limits are unknown until T4 reads the policy (0 = not read yet).
+        policy: { number: f.policyNumber, insurer: f.insurer, rentalDailyLimit: 0, rentalMaxDays: 0 },
+        accident: { date: f.accident.date, place: f.accident.place, description: f.accident.description, policeReportNumber: f.accident.policeReportNumber ?? null, injuries: f.accident.injuries, otherDriver },
+        phase: "intake",
+        compactSummary: "",
+        money: { totals: [], items: [] },
+        external: {},
+        facts: { photos: f.photos },
+        createdAt: at,
+      },
+      seedTasks(claimId).map((t) => tasks.buildTask(t)),
+    );
+    await contacts.upsertContact({ phone: f.claimant.phone, name: f.claimant.name, company: "Claimant", role: "claimant", claimIds: [claimId], trust: "known", isCompanyMainLine: false });
+    // The seeded company contacts (adjuster, shop, rental branch, clinic) are parties on every demo claim.
+    for (const c of await contacts.listContacts()) if (c.role !== "claimant") await contacts.linkContactToClaim(c.phone, claimId);
     // The intake observation wakes the agent (change stream).
     await observations.insertObservation({ claimId, source: "claimant", kind: "intake", body: { form: { ...f.accident, policyNumber: f.policyNumber, otherDriver, photos: f.photos }, message: f.message ?? null } });
     if (f.message) await observations.insertObservation({ claimId, source: "claimant", kind: "message", body: { text: f.message } });
@@ -97,7 +101,7 @@ export function buildControlServer(sup: Supervisor | null): FastifyInstance {
       leases: ls.map((l) => ({ claimId: l._id, workerId: l.workerId, expiresAt: l.expiresAt, live: l.expiresAt.getTime() > nowWall })),
       workerState: ws.map((w) => {
         const x = w as unknown as Record<string, unknown>;
-        return { workerId: w._id, resumeTokenSavedAt: w.savedAt ?? null, resumeTokenSavedSimAt: w.savedSimAt ?? null, heartbeatAt: x.heartbeatAt ?? null, held: x.held ?? [], pid: x.pid ?? null, replayedFromToken: x.replayed ?? 0 };
+        return { workerId: w._id, resumeTokenSavedAt: w.resumeToken ? w.updatedAt : null, heartbeatAt: x.heartbeatAt ?? null, held: x.held ?? [], pid: x.pid ?? null, replayedFromToken: x.replayed ?? 0 };
       }),
       llmMode: config.llmMode,
     };

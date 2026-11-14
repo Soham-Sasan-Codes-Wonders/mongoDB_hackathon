@@ -14,7 +14,7 @@ run("demo-rejection", async () => {
   const [first, second] = list;
   check(first!.status === "rejected" && first!.history.filter((h) => h.status === "sent").length === 1, "the rejected action was never retried");
   check(second!.idempotencyKey !== first!.idempotencyKey && second!.idempotencyKey.endsWith(":2"), `new key ${second!.idempotencyKey}`);
-  check(second!.supersedes === String(first!._id), "the corrected action supersedes the rejected one");
+  check(String(second!.supersedes?.actionId) === String(first!._id), "the corrected action supersedes the rejected one");
   check(typeof second!.payload.treatmentCode === "string", `corrected payload includes treatmentCode ${second!.payload.treatmentCode}`);
   const fact = await tasks.getTask(id, `${t13.taskId}:fact`);
   check(fact?.status === "confirmed", `fact-gathering task ${fact?.taskId} confirmed by a clinic read-back`);

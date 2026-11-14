@@ -1,4 +1,4 @@
-import { claims, observations, type Claim } from "@claims/db";
+import { claims, observations, type Claim } from "../db.ts";
 import { claimLog } from "../log.ts";
 
 /** Per-wake context for one claim. Holds no durable state: everything is re-read from MongoDB. */

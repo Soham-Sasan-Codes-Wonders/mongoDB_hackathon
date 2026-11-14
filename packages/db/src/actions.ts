@@ -1,183 +1,147 @@
-import { ObjectId, type ClientSession, type WithId } from "mongodb";
-import { col } from "./collections.ts";
-import { now } from "./clock.ts";
-import { Action, ACTION_TERMINAL, type ActionStatus } from "./schemas.ts";
+import { ObjectId, type ClientSession, type Document } from "mongodb";
+import { collection, wallNow } from "./database.js";
+import { now, nowSync } from "./clock.js";
+import { client } from "./database.js";
+import { ActionSchema, ActionStatusSchema, ApprovalSchema, TaskSchema, type Action, type Approval, type Task } from "./schemas.js";
 
-export type ActionDoc = WithId<Action>;
+export type ActionTransitionMeta = { by: string; note?: string };
+export class IllegalActionTransitionError extends Error {
+  constructor(readonly from: string, readonly to: string) { super(`Illegal action transition: ${from} → ${to}`); this.name = "IllegalActionTransitionError"; }
+}
+export class ActionTransitionConflictError extends Error {
+  constructor() { super("Action changed concurrently; reload before retrying the transition"); this.name = "ActionTransitionConflictError"; }
+}
 
-/**
- * The only legal action transitions (the doc's "Action lifecycle").
- *  - sent -> confirmed: a webhook proved the effect before the API responded.
- *  - sent/acknowledged -> sent: a retry with the SAME idempotency key.
- *  - rejected is terminal: the rejection subflow creates a new action with a new key.
- *  - awaiting_approval -> cancelled: the human declined.
- *  - any non-terminal -> closed_by_human: an operator closed it out of band.
- */
-export const TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> = {
-  planned: ["awaiting_approval", "sent", "cancelled", "failed", "closed_by_human"],
+const transitions: Record<string, readonly string[]> = {
+  planned: ["awaiting_approval", "sent", "failed", "cancelled", "closed_by_human"],
   awaiting_approval: ["approved", "cancelled", "closed_by_human"],
-  approved: ["sent", "cancelled", "closed_by_human"],
-  sent: ["sent", "acknowledged", "confirmed", "rejected", "failed", "cancelled", "closed_by_human"],
-  acknowledged: ["sent", "confirmed", "rejected", "failed", "cancelled", "closed_by_human"],
-  confirmed: [],
-  rejected: [],
-  failed: [],
-  cancelled: [],
-  closed_by_human: [],
+  approved: ["sent", "cancelled"],
+  sent: ["acknowledged", "confirmed", "rejected", "failed", "cancelled", "closed_by_human"],
+  acknowledged: ["confirmed", "rejected", "failed", "cancelled", "closed_by_human"],
+  failed: ["sent", "cancelled", "closed_by_human"],
+  confirmed: [], rejected: [], cancelled: [], closed_by_human: []
 };
 
-export class IllegalTransitionError extends Error {
-  constructor(
-    public readonly actionId: string,
-    public readonly from: ActionStatus,
-    public readonly to: ActionStatus,
-  ) {
-    super(`Illegal action transition ${from} -> ${to} (action ${actionId})`);
-    this.name = "IllegalTransitionError";
-  }
-}
-
-export function canTransition(from: ActionStatus, to: ActionStatus): boolean {
-  return TRANSITIONS[from].includes(to);
-}
-
-export function isTerminal(s: ActionStatus): boolean {
-  return ACTION_TERMINAL.includes(s);
-}
-
-/** `CLM-1042:T5:create_reservation:1`. Retries reuse it; only a new submission mints attempt+1. */
 export function mintIdempotencyKey(claimId: string, taskId: string, kind: string, attempt: number): string {
-  if (!Number.isInteger(attempt) || attempt < 1) throw new Error(`attempt must be >= 1, got ${attempt}`);
+  if (!Number.isInteger(attempt) || attempt < 1) throw new RangeError("attempt must be a positive integer");
   return `${claimId}:${taskId}:${kind}:${attempt}`;
 }
 
-export interface NewAction {
-  claimId: string;
-  taskId: string;
-  system: Action["system"];
-  kind: string;
-  idempotencyKey: string;
-  payload: Record<string, unknown>;
-  expectedEffect: Record<string, unknown>;
-  verifyBy: Action["verifyBy"];
-  deadline: Date;
-  gate?: Action["gate"];
-  supersedes?: string | null;
-  status?: "planned" | "awaiting_approval";
-  by?: string;
-  note?: string;
+export async function transitionAction(actionId: string | ObjectId, to: Action["status"], meta: ActionTransitionMeta): Promise<void> {
+  if (!ActionStatusSchema.safeParse(to).success) throw new TypeError(`Unknown action status: ${to}`);
+  const id = typeof actionId === "string" && ObjectId.isValid(actionId) ? new ObjectId(actionId) : actionId;
+  const actions = collection("actions");
+  const action = await actions.findOne({ _id: id } as Document);
+  if (!action) throw new Error(`Action ${String(actionId)} was not found`);
+  if (!transitions[action.status]?.includes(to)) throw new IllegalActionTransitionError(action.status, to);
+  const historyEntry = { status: to, at: await now(), wallAt: wallNow(), by: meta.by, note: meta.note ?? "" };
+  const setFields = { status: to, ...(to === "sent" ? { attempts: action.status === "failed" ? action.attempts + 1 : Math.max(action.attempts, 1) } : {}) };
+  const result = await actions.updateOne({ _id: id, status: action.status } as Document, { $set: setFields, $push: { history: historyEntry } } as any);
+  if (result.modifiedCount !== 1) throw new ActionTransitionConflictError();
 }
 
-export function buildActionDoc(a: NewAction): Action {
-  const at = now();
-  const status = a.status ?? "planned";
-  const doc: Action = {
-    claimId: a.claimId,
-    taskId: a.taskId,
-    system: a.system,
-    kind: a.kind,
-    idempotencyKey: a.idempotencyKey,
-    payload: a.payload,
-    expectedEffect: a.expectedEffect,
-    verifyBy: a.verifyBy,
-    status,
-    attempts: 0,
-    deadline: a.deadline,
-    gate: a.gate ?? null,
-    approvalId: null,
-    supersedes: a.supersedes ?? null,
-    lastError: null,
-    verifyAfter: null,
-    history: [{ status: "planned", at, wallAt: new Date(), by: a.by ?? "agent", note: a.note }],
-    createdAt: at,
-    updatedAt: at,
-  };
-  if (status === "awaiting_approval") {
-    doc.history.push({ status, at, wallAt: new Date(), by: a.by ?? "agent", note: `gate: ${a.gate}` });
-  }
-  return Action.parse(doc);
+export async function planTaskWithAction(session: ClientSession, task: Task, action: Action): Promise<string | ObjectId> {
+  const parsedTask = TaskSchema.parse(task);
+  const { _id: ignoredId, history: ignoredHistory, ...taskData } = parsedTask;
+  void ignoredId;
+  void ignoredHistory;
+  const parsedAction = ActionSchema.parse(action);
+  let actionId: string | ObjectId = "";
+  await session.withTransaction(async () => {
+    const taskCollection = collection("tasks");
+    const taskStatus = taskData.status;
+    const at = await now();
+    const historyEntry = { status: taskStatus, at, wallAt: wallNow(), by: "agent", note: "Task and action planned atomically" };
+    await taskCollection.updateOne({ claimId: taskData.claimId, taskId: taskData.taskId }, {
+      $set: { ...taskData, updatedAt: wallNow() },
+      $setOnInsert: { createdAt: wallNow() },
+      $push: { history: historyEntry }
+    } as Document, { upsert: true, session });
+    const actionDocument = { ...parsedAction, createdAt: parsedAction.createdAt ?? wallNow() };
+    const result = await collection("actions").insertOne(actionDocument as unknown as Document, { session });
+    actionId = result.insertedId!;
+  });
+  return actionId;
 }
 
-export interface TransitionMeta {
-  by: string;
-  note?: string;
-  set?: Partial<Pick<Action, "response" | "readback" | "lastError" | "verifyAfter" | "approvalId" | "profileVersion" | "payload">>;
-  incAttempts?: boolean;
-  session?: ClientSession;
+export async function getLatestActionsByTask(claimId: string): Promise<Document[]> {
+  return collection("actions").aggregate([
+    { $match: { claimId } }, { $sort: { createdAt: -1, _id: -1 } },
+    { $group: { _id: "$taskId", action: { $first: "$$ROOT" } } }, { $replaceRoot: { newRoot: "$action" } }
+  ]).toArray();
 }
 
-/**
- * Move an action to `to`. Enforces TRANSITIONS with a compare-and-set on the current status,
- * so two workers can't both move it. Appends {status, at, wallAt, by, note} to history.
- */
-export async function transitionAction(actionId: string | ObjectId, to: ActionStatus, meta: TransitionMeta): Promise<ActionDoc> {
-  const actions = await col.actions();
-  const _id = typeof actionId === "string" ? new ObjectId(actionId) : actionId;
-  const current = await actions.findOne({ _id }, { session: meta.session });
-  if (!current) throw new Error(`action ${_id} not found`);
-  if (!canTransition(current.status, to)) throw new IllegalTransitionError(String(_id), current.status, to);
-  const at = now();
-  const entry = { status: to, at, wallAt: new Date(), by: meta.by, note: meta.note };
-  const res = await actions.findOneAndUpdate(
-    { _id, status: current.status },
-    {
-      $set: { status: to, updatedAt: at, ...(meta.set ?? {}) },
-      $push: { history: entry },
-      ...(meta.incAttempts ? { $inc: { attempts: 1 } } : {}),
-    },
-    { returnDocument: "after", session: meta.session },
-  );
-  if (!res) {
-    const again = await actions.findOne({ _id });
-    throw new IllegalTransitionError(String(_id), again?.status ?? current.status, to);
-  }
-  return res;
+/* ---------------------------------------------------------------- agent additions */
+
+export type ActionDoc = Action & { _id: ObjectId };
+export const ACTION_TRANSITIONS: Readonly<Record<string, readonly string[]>> = transitions;
+export const TERMINAL_ACTION_STATUSES: readonly Action["status"][] = ["confirmed", "rejected", "cancelled", "closed_by_human"];
+
+/** The code-enforced lifecycle as a pure check (same table transitionAction uses). */
+export function canTransition(from: Action["status"], to: Action["status"]): boolean {
+  return transitions[from]?.includes(to) ?? false;
 }
 
-/** Record a note in history without changing status (e.g. "read-back: effect missing"). */
-export async function noteAction(actionId: string | ObjectId, note: string, by: string, set: Record<string, unknown> = {}): Promise<void> {
-  const _id = typeof actionId === "string" ? new ObjectId(actionId) : actionId;
-  const at = now();
-  const a = await (await col.actions()).findOne({ _id });
+const oid = (id: string | ObjectId) => (typeof id === "string" && ObjectId.isValid(id) ? new ObjectId(id) : id);
+
+/** Set non-status fields (response, readback, verifyAfter, lastError, ...). Status only changes through transitionAction. */
+export async function setActionFields(actionId: string | ObjectId, set: Partial<Pick<Action, "response" | "readback" | "lastError" | "verifyAfter" | "profileVersion" | "approvalId">>): Promise<void> {
+  await collection("actions").updateOne({ _id: oid(actionId) } as Document, { $set: { ...set, updatedAt: nowSync() } });
+}
+
+/** History note without a status change (e.g. "read-back: effect not found"). */
+export async function appendActionNote(actionId: string | ObjectId, note: string, by: string, set: Partial<Pick<Action, "response" | "readback" | "lastError" | "verifyAfter">> = {}): Promise<void> {
+  const a = await collection("actions").findOne({ _id: oid(actionId) } as Document);
   if (!a) return;
-  await (await col.actions()).updateOne(
-    { _id },
-    { $set: { updatedAt: at, ...set }, $push: { history: { status: a.status, at, wallAt: new Date(), by, note } } },
-  );
+  await collection("actions").updateOne({ _id: oid(actionId) } as Document, { $set: { ...set, updatedAt: nowSync() }, $push: { history: { status: a.status, at: nowSync(), wallAt: wallNow(), by, note } } } as Document);
 }
 
 export async function getAction(actionId: string | ObjectId): Promise<ActionDoc | null> {
-  const _id = typeof actionId === "string" ? new ObjectId(actionId) : actionId;
-  return (await col.actions()).findOne({ _id });
+  return collection<ActionDoc>("actions").findOne({ _id: oid(actionId) } as Document);
 }
-
 export async function findActionByKey(idempotencyKey: string): Promise<ActionDoc | null> {
-  return (await col.actions()).findOne({ idempotencyKey });
+  return collection<ActionDoc>("actions").findOne({ idempotencyKey });
 }
-
-export async function listActions(claimId: string, filter: { status?: ActionStatus[]; taskId?: string } = {}): Promise<ActionDoc[]> {
-  const q: Record<string, unknown> = { claimId };
-  if (filter.status) q.status = { $in: filter.status };
-  if (filter.taskId) q.taskId = filter.taskId;
-  return (await col.actions()).find(q).sort({ createdAt: 1, _id: 1 }).toArray();
+export async function listActions(claimId: string, filter: { status?: Action["status"][]; taskId?: string } = {}): Promise<ActionDoc[]> {
+  return collection<ActionDoc>("actions").find({ claimId, ...(filter.status ? { status: { $in: filter.status } } : {}), ...(filter.taskId ? { taskId: filter.taskId } : {}) }).sort({ createdAt: 1, _id: 1 }).toArray();
 }
-
-/** Actions that must be verified before anything new is done (loop step 3, crash recovery step 4). */
-export async function listUnverified(claimId: string): Promise<ActionDoc[]> {
-  return listActions(claimId, { status: ["sent", "acknowledged"] });
-}
-
-export async function listOpenForTask(claimId: string, taskId: string): Promise<ActionDoc[]> {
-  return (await col.actions())
-    .find({ claimId, taskId, status: { $nin: [...ACTION_TERMINAL] } })
-    .sort({ createdAt: 1 })
-    .toArray();
-}
-
 export async function countActionsForTask(claimId: string, taskId: string, kind?: string): Promise<number> {
-  return (await col.actions()).countDocuments({ claimId, taskId, ...(kind ? { kind } : {}) });
+  return collection("actions").countDocuments({ claimId, taskId, ...(kind ? { kind } : {}) });
 }
 
-export async function latestActionForTask(claimId: string, taskId: string, kind?: string): Promise<ActionDoc | null> {
-  return (await col.actions()).findOne({ claimId, taskId, ...(kind ? { kind } : {}) }, { sort: { createdAt: -1, _id: -1 } });
+/**
+ * The transactional outbox, extended with gates: the task's status change, its new action and, when
+ * the action hits a gate, the approval request, all in ONE transaction. A gated action is written
+ * as `awaiting_approval` and the task as `awaiting_approval`.
+ */
+export async function planTaskWithActionAndApproval(
+  task: { claimId: string; taskId: string; status: Task["status"]; note?: string; by?: string },
+  action: Omit<Action, "_id" | "status" | "attempts" | "history" | "createdAt">,
+  approval?: Omit<Approval, "_id" | "claimId" | "actionId" | "status" | "createdAt">,
+): Promise<{ actionId: ObjectId; approvalId: ObjectId | null }> {
+  const at = nowSync();
+  const by = task.by ?? "agent";
+  const actionId = new ObjectId();
+  const approvalId = approval ? new ObjectId() : null;
+  const history: Action["history"] = [{ status: "planned", at, wallAt: wallNow(), by, note: task.note ?? "planned" }];
+  if (approval) history.push({ status: "awaiting_approval", at, wallAt: wallNow(), by, note: `gate: ${approval.gate}` });
+  const doc = ActionSchema.parse({ ...action, status: approval ? "awaiting_approval" : "planned", attempts: 0, history, createdAt: at, updatedAt: at, ...(approvalId ? { approvalId: String(approvalId) } : {}) });
+  const taskStatus = approval ? "awaiting_approval" : task.status;
+  const session = client.startSession();
+  try {
+    await session.withTransaction(async () => {
+      if (approval && approvalId) {
+        await collection("approvals").insertOne({ _id: approvalId, ...ApprovalSchema.parse({ ...approval, claimId: action.claimId, actionId: String(actionId), status: "pending", createdAt: at }) } as Document, { session });
+      }
+      await collection("actions").insertOne({ ...doc, _id: actionId } as unknown as Document, { session });
+      const res = await collection("tasks").updateOne({ claimId: task.claimId, taskId: task.taskId }, {
+        $set: { status: taskStatus, updatedAt: at },
+        $push: { history: { status: taskStatus, at, wallAt: wallNow(), by, note: task.note ?? `${action.kind} planned` } },
+      } as Document, { session });
+      if (res.matchedCount !== 1) throw new Error(`task ${task.claimId}/${task.taskId} does not exist`);
+    });
+  } finally {
+    await session.endSession();
+  }
+  return { actionId, approvalId };
 }

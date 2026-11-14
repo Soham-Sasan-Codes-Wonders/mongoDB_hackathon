@@ -1,90 +1,38 @@
-import { ObjectId, type WithId } from "mongodb";
-import { col } from "./collections.ts";
-import { now } from "./clock.ts";
-import { Timer, type TimerRule } from "./schemas.ts";
+import { ObjectId, type Document } from "mongodb";
+import { collection } from "./database.js";
+import { TimerSchema, type Timer } from "./schemas.js";
 
-export type TimerDoc = WithId<Timer>;
-
-export interface NewTimer {
-  claimId: string;
-  taskId: string;
-  rule: TimerRule;
-  dueAt: Date;
-  escalationLevel?: number;
-  actionId?: string | null;
-  approvalId?: string | null;
-  params?: Record<string, unknown>;
+export async function dueTimers(simNow: Date, claimId?: string): Promise<Timer[]> {
+  return collection<Timer & Document>("timers").find({ fired: false, cancelled: false, dueAt: { $lte: simNow }, ...(claimId ? { claimId } : {}) }).sort({ dueAt: 1 }).toArray();
+}
+export async function createTimer(timer: Omit<Timer, "_id">): Promise<string> {
+  const result = await collection("timers").insertOne(TimerSchema.parse(timer) as unknown as Document);
+  return result.insertedId.toString();
+}
+export async function cancelTimersForTask(claimId: string, taskId: string, rules?: Timer["rule"][]): Promise<number> {
+  return (await collection("timers").updateMany({ claimId, taskId, fired: false, cancelled: false, ...(rules ? { rule: { $in: rules } } : {}) }, { $set: { cancelled: true } })).modifiedCount;
+}
+export async function markFired(timerId: string): Promise<boolean> {
+  const id = ObjectId.isValid(timerId) ? new ObjectId(timerId) : timerId;
+  const result = await collection("timers").updateOne({ _id: id, fired: false, cancelled: false } as Document, { $set: { fired: true } });
+  return result.modifiedCount === 1;
 }
 
-export async function createTimer(t: NewTimer): Promise<string> {
-  const doc = Timer.parse({
-    claimId: t.claimId,
-    taskId: t.taskId,
-    rule: t.rule,
-    dueAt: t.dueAt,
-    fired: false,
-    cancelled: false,
-    escalationLevel: t.escalationLevel ?? 0,
-    actionId: t.actionId ?? null,
-    approvalId: t.approvalId ?? null,
-    params: t.params ?? {},
-    createdAt: now(),
-    firedAt: null,
-  });
-  const res = await (await col.timers()).insertOne(doc);
-  return String(res.insertedId);
-}
+/* ---------------------------------------------------------------- agent additions */
 
-/** Create unless an open timer with the same (claim, task, rule[, actionId]) already exists. */
-export async function ensureTimer(t: NewTimer): Promise<string | null> {
-  const existing = await (await col.timers()).findOne({
-    claimId: t.claimId,
-    taskId: t.taskId,
-    rule: t.rule,
-    fired: false,
-    cancelled: false,
-    ...(t.actionId ? { actionId: t.actionId } : {}),
-    ...(t.approvalId ? { approvalId: t.approvalId } : {}),
-  });
-  if (existing) return null;
-  return createTimer(t);
-}
+export type TimerDoc = Timer & { _id: ObjectId };
 
-/** Uses index {fired:1, cancelled:1, dueAt:1}. */
-export async function dueTimers(simNow: Date, claimId?: string): Promise<TimerDoc[]> {
-  return (await col.timers())
-    .find({ fired: false, cancelled: false, dueAt: { $lte: simNow }, ...(claimId ? { claimId } : {}) })
-    .sort({ dueAt: 1 })
-    .limit(500)
-    .toArray();
+/** Create unless an open timer with the same claim/task/rule (and action/approval, if given) exists. */
+export async function ensureTimer(timer: Omit<Timer, "_id">): Promise<string | null> {
+  const existing = await collection("timers").findOne({ claimId: timer.claimId, taskId: timer.taskId, rule: timer.rule, fired: false, cancelled: false, ...(timer.actionId ? { actionId: timer.actionId } : {}), ...(timer.approvalId ? { approvalId: timer.approvalId } : {}) });
+  return existing ? null : createTimer(timer);
 }
-
-/** Compare-and-set so two workers never fire the same timer. Returns true if this caller fired it. */
-export async function markFired(timerId: string | ObjectId): Promise<boolean> {
-  const _id = typeof timerId === "string" ? new ObjectId(timerId) : timerId;
-  const res = await (await col.timers()).updateOne({ _id, fired: false, cancelled: false }, { $set: { fired: true, firedAt: now() } });
-  return res.modifiedCount === 1;
-}
-
-/** A confirmed task never gets chased. */
-export async function cancelTimersForTask(claimId: string, taskId: string, rules?: TimerRule[]): Promise<number> {
-  const res = await (await col.timers()).updateMany(
-    { claimId, taskId, fired: false, cancelled: false, ...(rules ? { rule: { $in: rules } } : {}) },
-    { $set: { cancelled: true } },
-  );
-  return res.modifiedCount;
-}
-
 export async function cancelTimersForAction(actionId: string): Promise<number> {
-  const res = await (await col.timers()).updateMany({ actionId, fired: false, cancelled: false }, { $set: { cancelled: true } });
-  return res.modifiedCount;
+  return (await collection("timers").updateMany({ actionId, fired: false, cancelled: false }, { $set: { cancelled: true } })).modifiedCount;
 }
-
 export async function cancelTimersForApproval(approvalId: string): Promise<number> {
-  const res = await (await col.timers()).updateMany({ approvalId, fired: false, cancelled: false }, { $set: { cancelled: true } });
-  return res.modifiedCount;
+  return (await collection("timers").updateMany({ approvalId, fired: false, cancelled: false }, { $set: { cancelled: true } })).modifiedCount;
 }
-
 export async function listOpenTimers(claimId: string): Promise<TimerDoc[]> {
-  return (await col.timers()).find({ claimId, fired: false, cancelled: false }).sort({ dueAt: 1 }).toArray();
+  return collection<TimerDoc>("timers").find({ claimId, fired: false, cancelled: false }).sort({ dueAt: 1 }).toArray();
 }

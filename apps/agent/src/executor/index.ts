@@ -1,4 +1,4 @@
-import { actions, approvals, claims, clock, health, profiles, timers, type ActionDoc, type ApprovalDoc, type Claim, type OutsideSystem } from "@claims/db";
+import { actions, approvals, claims, clock, health, profiles, timers, type ActionDoc, type ApprovalDoc, type Claim, type OutsideSystem } from "../db.ts";
 import { config } from "../config.ts";
 import { claimLog, errMsg } from "../log.ts";
 import { kindSpec, type Get, type ReadBackResult } from "./adapters.ts";
@@ -22,12 +22,13 @@ export type ExecOutcome =
 
 /**
  * The executor's hard precondition. Plain code, not a prompt:
- *  - a first send needs status `planned` or `approved`; a retry needs `sent`/`acknowledged`
+ *  - a first send needs status `planned` or `approved`; a retry (same key) needs `sent`/`acknowledged`,
+ *    or `failed` (a validation error the drift subflow has since fixed)
  *  - a gated action needs ITS approval document, decided `approved`
  */
 export function assertExecutable(action: Pick<ActionDoc, "_id" | "status" | "gate" | "approvalId">, approval: Pick<ApprovalDoc, "_id" | "status" | "actionId"> | null, mode: "send" | "retry" = "send"): void {
   const id = String(action._id);
-  const allowed = mode === "send" ? ["planned", "approved"] : ["sent", "acknowledged"];
+  const allowed = mode === "send" ? ["planned", "approved"] : ["sent", "acknowledged", "failed"];
   if (!allowed.includes(action.status)) throw new GateError(id, `status is ${action.status}, needs ${allowed.join("/")}`);
   if (action.gate) {
     if (!approval) throw new GateError(id, `gate ${action.gate} has no approval document`);
@@ -90,10 +91,13 @@ async function send(action: ActionDoc, mode: "send" | "retry", by: string): Prom
   const req = spec.request(action, claim as Claim);
   const { body, version } = req.body ? await mapPayload(action.system, req.body) : { body: undefined, version: null };
 
+  // The shared state machine retries through `failed -> sent` (same key); an unproven send is parked there first.
+  if (mode === "retry" && (action.status === "sent" || action.status === "acknowledged")) {
+    await actions.transitionAction(action._id, "failed", { by, note: "no proof of the effect: resending with the same idempotency key" });
+  }
   // Outbox order: record `sent` BEFORE the call, so a crash mid-call leaves an action recovery will read back.
   const sent = await actions.transitionAction(action._id, "sent", {
     by,
-    incAttempts: true,
     note: `${mode === "retry" ? "retry" : "send"} #${action.attempts + 1} ${req.method} ${req.path} key=${action.idempotencyKey}${version ? ` profile v${version}` : ""}`,
     set: { profileVersion: version },
   });
@@ -121,8 +125,9 @@ async function send(action: ActionDoc, mode: "send" | "retry", by: string): Prom
   }
   if (res.status === 422 || (res.status === 400 && j.error === "validation")) {
     const msg = String(j.message ?? "validation error");
-    await actions.noteAction(action._id, `HTTP ${res.status} validation: ${msg} (drift?)`, by, { lastError: msg });
-    return { outcome: "drift", action: sent, status: res.status, error: msg, details: j.details ?? null, op: req.op };
+    // Not accepted: `failed` until the drift subflow fixes the mapping and resends with the same key.
+    const failed = await actions.transitionAction(action._id, "failed", { by, note: `HTTP ${res.status} validation: ${msg} (drift?)`, set: { lastError: msg } });
+    return { outcome: "drift", action: failed, status: res.status, error: msg, details: j.details ?? null, op: req.op };
   }
   if (res.status === 409 || j.error === "rejected" || (spec.readOnly && res.status === 404)) {
     const reason = String(j.reason ?? j.message ?? `HTTP ${res.status}`);

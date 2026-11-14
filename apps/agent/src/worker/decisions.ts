@@ -1,4 +1,4 @@
-import { actions, approvals, claims, experiences, tasks, timers, type ApprovalDoc, type OutsideSystem, type SystemSpec } from "@claims/db";
+import { actions, approvals, claims, experiences, tasks, timers, type ApprovalDoc, type OutsideSystem, type SystemSpec } from "../db.ts";
 import { applyDriftProposal } from "../subflows/drift.ts";
 import type { MappingProposal } from "../llm/jobs.ts";
 import { notifyOperator, type ClaimCtx } from "./context.ts";
@@ -29,10 +29,10 @@ export async function applyDecision(c: ClaimCtx, body: Record<string, unknown>):
   c.event(`${ap.approverRole} ${ap.status} ${ap.gate}${ap.taskId ? ` (${ap.taskId})` : ""}`);
 
   switch (ap.gate) {
-    case "settlement_acceptance":
+    case "accept_settlement":
     case "sign_release":
-    case "fault_statement":
-    case "rental_beyond_coverage": {
+    case "discuss_fault":
+    case "rental_overage": {
       const a = ap.actionId ? await actions.getAction(ap.actionId) : null;
       if (!a || a.status !== "awaiting_approval") return;
       if (approved) {
@@ -56,8 +56,8 @@ export async function applyDecision(c: ClaimCtx, body: Record<string, unknown>):
       }
       return;
     }
-    case "low_confidence_drift": {
-      const d = ap.details as { trigger?: Record<string, unknown>; proposal?: MappingProposal | null; describe?: SystemSpec };
+    case "drift_mapping": {
+      const d = (ap.details ?? {}) as { trigger?: Record<string, unknown>; proposal?: MappingProposal | null; describe?: SystemSpec };
       const trig = d.trigger ?? {};
       if (!approved || !d.proposal || !d.describe) {
         await experiences.recordExperience({ problemType: "drift", system: String(trig.system ?? "unknown"), problem: String(trig.error ?? "drift"), fix: { operatorRejected: d.proposal ?? null }, outcome: "operator declined the proposed mapping", claimId: c.claimId });
@@ -70,7 +70,7 @@ export async function applyDecision(c: ClaimCtx, body: Record<string, unknown>):
       return;
     }
     case "decision_request": {
-      const det = ap.details as Record<string, unknown>;
+      const det = (ap.details ?? {}) as Record<string, unknown>;
       const id = `CALL#${String(det.observationId ?? approvalId).slice(-6)}:decision`;
       await tasks.insertTaskIfMissing({ claimId: c.claimId, taskId: id, type: "relay_decision", title: `Relay the claimant's answer to ${det.system ?? "the caller"}`, track: "intake", dependsOn: [], params: { system: det.system ?? "insurer", question: det.question, decision: ap.status, note: ap.decisionNote ?? null } });
       return;
@@ -80,7 +80,7 @@ export async function applyDecision(c: ClaimCtx, body: Record<string, unknown>):
         await notifyOperator(c, "Reconciliation gaps were declined; T18 stays open until they're resolved.");
         return;
       }
-      for (const g of (ap.details.gaps as { ref: string; category: "repair" | "rental" | "medical" }[]) ?? []) {
+      for (const g of ((ap.details ?? {}).gaps as { ref: string; category: "repair" | "rental" | "medical" }[]) ?? []) {
         await claims.upsertMoneyItem(c.claimId, { ref: g.ref, category: g.category, gapReason: `operator ${ap.decidedBy}: ${ap.decisionNote ?? "explained"}` });
       }
       await tasks.setTaskStatus(c.claimId, "T18", "pending", { by: c.workerId, note: "gaps explained by operator; reconcile again" });
@@ -88,7 +88,7 @@ export async function applyDecision(c: ClaimCtx, body: Record<string, unknown>):
     }
     case "llm_review": {
       if (!ap.taskId) return;
-      if (approved) await confirmTask(c, ap.taskId, `operator ${ap.decidedBy}: ${String(ap.details.onApprove ?? "approved")}`, ap.taskId === "T1" ? "confirmed" : "closed_by_human");
+      if (approved) await confirmTask(c, ap.taskId, `operator ${ap.decidedBy}: ${String((ap.details ?? {}).onApprove ?? "approved")}`, ap.taskId === "T1" ? "confirmed" : "closed_by_human");
       else await notifyOperator(c, `${ap.taskId} left for manual handling (LLM review declined).`);
       return;
     }

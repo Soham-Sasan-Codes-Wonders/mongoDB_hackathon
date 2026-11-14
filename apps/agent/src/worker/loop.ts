@@ -1,7 +1,7 @@
 import {
-  actions, approvals, claims, clock, findReadyTasks, leases, mintIdempotencyKey, observations, planTaskWithAction, tasks, timers,
+  actions, approvals, claims, clock, leases, mintIdempotencyKey, observations, planTaskWithAction, tasks, timers,
   type ActionDoc, type TaskDoc,
-} from "@claims/db";
+} from "../db.ts";
 import { config } from "../config.ts";
 import { execute, GateError } from "../executor/index.ts";
 import { pickNextTask, summarizeClaim } from "../llm/jobs.ts";
@@ -66,7 +66,7 @@ async function step3Verify(c: ClaimCtx, w: WorkerState): Promise<void> {
 
 /** Step 4: ready tasks from the dependency graph (plain code). */
 async function step4Ready(c: ClaimCtx): Promise<TaskDoc[]> {
-  const ready = await findReadyTasks(c.claimId);
+  const ready = await tasks.findReadyTasks(c.claimId);
   for (const t of ready) if (t.status === "pending") await tasks.setTaskStatus(c.claimId, t.taskId, "ready", { by: c.workerId, note: "dependencies confirmed" });
   if (ready.length) c.log("step 4 ready", ready.map((t) => t.taskId).join(", "));
   return ready;
@@ -112,7 +112,6 @@ async function step7Commit(c: ClaimCtx, t: TaskDoc, plan: Extract<Plan, { type: 
   const key = mintIdempotencyKey(c.claimId, t.taskId, plan.kind, attempt);
   const gate = plan.gate ?? null;
   const { action, approvalId } = await planTaskWithAction(
-    null,
     { claimId: c.claimId, taskId: t.taskId, status: "in_progress", note: plan.note ?? `${plan.kind} planned`, by: c.workerId },
     {
       claimId: c.claimId,
@@ -126,8 +125,6 @@ async function step7Commit(c: ClaimCtx, t: TaskDoc, plan: Extract<Plan, { type: 
       deadline: new Date(clock.nowMs() + config.actionDeadlineSim),
       gate,
       supersedes: plan.supersedes ?? null,
-      by: c.workerId,
-      note: plan.note,
     },
     gate ? { taskId: t.taskId, gate, request: plan.gateRequest ?? `Approve ${plan.kind}?`, details: { payload: plan.payload, ...(plan.gateDetails ?? {}) } } : undefined,
   );

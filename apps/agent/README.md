@@ -3,7 +3,8 @@
 Takes a car accident claim from first report to a closed file across four mock outside systems
 (insurer, body shop, rental, clinic billing), a claimant, and an inbound phone line. Source of
 truth for the design: `Claim Coordinator Agent — Workflow Design (1).md` at the repo root. All
-database access goes through `packages/db`.
+database access goes through `packages/db` (`@claim-coordinator/db`). `src/db.ts` is a thin facade
+over it that only renames and reshapes; it never calls the driver.
 
 Three rules everything follows:
 
@@ -20,17 +21,17 @@ Three rules everything follows:
 # repo root
 pnpm install
 cp .env.example .env          # set MONGODB_URI (Atlas M0 or a local replica set), keys optional
-pnpm db:setup && pnpm db:seed # collections, validators, indexes, 3 search indexes, seed data
-pnpm --filter agent dev       # mocks :4000 + control/webhooks/phone :4100 + supervised worker(s)
+pnpm db:setup && pnpm db:seed # collections, validators, indexes, 3 search indexes, seed data (v1 profiles = the mocks' /describe)
+pnpm --filter agent dev       # builds packages/db, then mocks :4000 + control/webhooks/phone :4100 + supervised worker(s)
 ```
 
-`pnpm --filter agent dev` also runs setup and seed, so they're safe to skip after the first time.
+`dev` re-runs `setupDatabase()` (idempotent) on start; run `pnpm db:seed` once per database.
 
 | Env | Meaning |
 | --- | --- |
 | `MONGODB_URI`, `MONGODB_DB` | Atlas (M0 is fine) or a local replica set (`mongod --replSet rs0`; transactions and change streams need one) |
 | `ANTHROPIC_API_KEY` | When set, the LLM runs live on `claude-opus-5-5`. When unset, `LLM_MODE` defaults to `stub`: deterministic offline heuristics that go through the same zod validation. Force with `LLM_MODE=live\|stub`. |
-| `VOYAGE_API_KEY` | `voyage-3.5` embeddings. Unset: local hashing embeddings (dev only). |
+| `VOYAGE_API_KEY` | `voyage-3.5` embeddings (required by `packages/db`). For offline dev only, `ALLOW_LOCAL_EMBEDDINGS=1` uses a local hashing embedding instead. |
 | `ELEVENLABS_WEBHOOK_SECRET` | HMAC secret for `/phone/post-call`. Unset: every post-call webhook is rejected. |
 | `WORKERS` | `1` (default) or `2` to show lease takeover. |
 | `CLAIM_DAY_MS` | Wall ms per simulated claim day for a fresh clock (default `20000`). |
@@ -54,7 +55,7 @@ pnpm --filter agent demo:rejection  # bonus: rejected invoice -> fact task -> ne
 pnpm --filter agent demo:all        # all of the above, in order
 ```
 
-Each script resets the claim data, mock state and clock (seed data and resume tokens are kept),
+Each script resets the claim data (`resetDemoData()`, which keeps the seeded `CLM-1042`), mock state and clock (seed data and resume tokens are kept),
 drives the scene, asserts the outcome, and prints the action history it produced.
 
 ### Tests
@@ -152,15 +153,17 @@ isn't confirmed), re-arms after each extension, and resolves when T11 proves the
 Days beyond coverage are a claimant gate. Inserted tasks (e.g. `T9a#photos` from drift, the
 `:fact` tasks from rejection) are added to the blocked task's `dependsOn`.
 
-**Action lifecycle.** `packages/db/src/actions.ts` (`TRANSITIONS`, compare-and-set, `history[]`).
+**Action lifecycle.** `packages/db/src/actions.ts` (`transitions` / `ACTION_TRANSITIONS`, compare-and-set on the current status, `history[]`).
 `sent → confirmed` is allowed (a webhook triggers the read-back before the response is handled).
-Retries reuse the key. Rejected is terminal; the rejection subflow's corrected action gets a new key
+A retry reuses the key and goes through the shared state machine's `failed -> sent` (an unproven
+`sent`/`acknowledged` action is parked as `failed` with a note, then resent); a validation error also
+parks the action as `failed` until the drift subflow fixes the mapping. Rejected is terminal; the rejection subflow's corrected action gets a new key
 (`…:2`) and `supersedes` the old one. The executor writes `sent` before the HTTP call (outbox), so a
 crash mid-call leaves an action recovery will read back.
 
-**Gates** (`assertExecutable`, executor). The doc's six: `settlement_acceptance`, `sign_release`,
-`fault_statement` (FNOL text with a fault statement), `rental_beyond_coverage`,
-`low_confidence_drift`, `unverified_after_retries`. Three more approval kinds the doc describes:
+**Gates** (`assertExecutable`, executor). The doc's six: `accept_settlement`, `sign_release`,
+`discuss_fault` (FNOL text with a fault statement), `rental_overage`,
+`drift_mapping`, `unverified_after_retries`. Three more approval kinds the doc describes:
 `decision_request` (phone), `reconciliation_gap` (T18 → operator), `llm_review` (malformed, refused
 or low-confidence LLM output → operator, nothing else written). A claimant gate that waits 1 claim
 day gets a `claimant_reminder` timer. For `unverified_after_retries`, approve = closed by a human,
@@ -183,8 +186,9 @@ the cached prefix. The jobs: `extractAccidentDetails`, `interpretInboundMessage`
 `interpretCall`. `pickNextTask` output is checked against the ready set in code. The summary is
 capped at 2k chars by the validator.
 
-**Money.** `claims.money.items[]` (one line per estimate, invoice and rental), with totals and
-`reconcileMoney` computed by aggregation pipelines in `packages/db`. Gap reasons come from code
+**Money.** `claims.money.items[]` (`itemId` = `estimate:…`, `invoice:…`, `rental:…`; `kind` estimate or
+invoice; `reason` explains a gap). `money.totals` (`recomputeMoneyTotals`) and `reconcileMoney` are
+aggregation pipelines in `packages/db`. Gap reasons come from code
 (policy deductible from the insurer's offer, claimant-approved days beyond coverage, an insurer
 denial). Unexplained gaps go to an operator.
 

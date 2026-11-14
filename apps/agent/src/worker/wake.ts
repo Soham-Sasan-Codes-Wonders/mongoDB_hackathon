@@ -1,4 +1,4 @@
-import { claims, clock, leases, observations, timers } from "@claims/db";
+import { claims, clock, leases, observations, timers } from "../db.ts";
 import type { ResumeToken } from "mongodb";
 import { config } from "../config.ts";
 import { errMsg, log } from "../log.ts";
@@ -50,11 +50,12 @@ export class Waker {
         const stream = await observations.watchObservations(token);
         log(this.w.workerId, token ? "change stream resumed from saved resume token (delivers everything that arrived while down)" : "change stream opened (no saved token)");
         for await (const ev of stream) {
-          token = ev._id;
-          const o = ev.fullDocument;
+          token = ev._id as ResumeToken;
           await observations.saveResumeToken(this.w.workerId, token);
+          if (ev.operationType !== "insert") continue; // only new observations wake the loop
+          const o = ev.fullDocument as unknown as { claimId: string; source: string; kind: string; processedAt?: Date; receivedWallAt?: Date };
           if (!o || o.processedAt) continue; // outbound agent messages are inserted pre-processed
-          const missed = o.receivedWallAt.getTime() < this.startedWall;
+          const missed = (o.receivedWallAt?.getTime() ?? Date.now()) < this.startedWall;
           if (missed) this.replayed++;
           log(this.w.workerId, `change stream: ${o.source}.${o.kind} for ${o.claimId}${missed ? " (arrived while this worker was down; replayed from resume token)" : ""}`);
           this.wake(o.claimId, "observation");

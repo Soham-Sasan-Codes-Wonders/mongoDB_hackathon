@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   actions, approvals, claims, clock, documents, observations, tasks, timers,
   type ActionDoc, type Gate, type TaskDoc, type TaskStatus, type TimerRule,
-} from "@claims/db";
+} from "../db.ts";
 import { config } from "../config.ts";
 import { getter } from "../executor/index.ts";
 import { reads } from "../executor/adapters.ts";
@@ -19,7 +19,7 @@ export type Plan =
       kind: string;
       payload: Record<string, unknown>;
       expectedEffect: Record<string, unknown>;
-      verifyBy?: "readback" | "webhook_or_readback";
+      verifyBy?: "readback" | "readback_or_webhook";
       gate?: Gate | null;
       gateRequest?: string;
       gateDetails?: Record<string, unknown>;
@@ -127,7 +127,7 @@ const T1: Handler = {
       "accident.injuries": d.injuries || c.claim.accident.injuries,
       "accident.mentionsFault": d.mentionsFault,
       "facts.faultStatement": d.faultStatement,
-      "parties.otherDriver": d.otherDriver,
+      "accident.otherDriver": d.otherDriver,
       ...(d.policyNumber ? { "policy.number": d.policyNumber } : {}),
     });
     if (missing.length) {
@@ -145,7 +145,7 @@ const T1: Handler = {
 
 const T2: Handler = {
   async plan(c, t) {
-    const declinedFault = await hasDeclined(c, t.taskId, "fault_statement");
+    const declinedFault = await hasDeclined(c, t.taskId, "discuss_fault");
     const fault = !!c.claim.accident.mentionsFault && !declinedFault;
     const description = declinedFault ? "Two-vehicle collision. Fault not stated." : c.claim.accident.description;
     return {
@@ -159,12 +159,12 @@ const T2: Handler = {
         description,
         vehicleVin: c.claim.vehicle.vin,
         externalRef: c.claimId,
-        otherParty: c.claim.parties?.otherDriver ?? null,
+        otherParty: c.claim.accident.otherDriver ?? null,
         injuries: c.claim.accident.injuries,
         policeReportNumber: c.claim.accident.policeReportNumber,
       },
       expectedEffect: { claimExistsForKey: true, externalRef: c.claimId },
-      gate: fault ? "fault_statement" : null,
+      gate: fault ? "discuss_fault" : null,
       gateRequest: fault ? `Your description includes a statement about fault: "${String(facts(c).faultStatement ?? c.claim.accident.description).slice(0, 200)}". Approve sending it to the insurer as written? Decline and we'll send a neutral description instead.` : undefined,
     };
   },
@@ -204,7 +204,7 @@ const T5: Handler = {
     const limit = Number(c.claim.policy.rentalDailyLimit ?? 40);
     const maxDays = Number(c.claim.policy.rentalMaxDays ?? 10);
     const requested = Number(facts(c).rentalDaysRequested ?? 10);
-    const beyond = requested > maxDays && !(await hasDeclined(c, t.taskId, "rental_beyond_coverage"));
+    const beyond = requested > maxDays && !(await hasDeclined(c, t.taskId, "rental_overage"));
     const days = beyond ? requested : Math.min(requested, maxDays);
     return {
       type: "action",
@@ -212,7 +212,7 @@ const T5: Handler = {
       kind: "create_reservation",
       payload: { claimRef: c.claimId, vehicleClass: "compact", startDate: today(), days, dailyRate: Math.min(40, limit), customerName: c.claim.claimant.name },
       expectedEffect: { reservationExistsWithKey: true, days },
-      gate: beyond ? "rental_beyond_coverage" : null,
+      gate: beyond ? "rental_overage" : null,
       gateRequest: beyond ? `Book ${days} rental days? Your policy covers ${maxDays}; you would pay the extra ${days - maxDays} days.` : undefined,
     };
   },
@@ -256,25 +256,24 @@ const T7: Handler = {
     const est = obj(b?.estimate);
     if (!est.estimateId) return { done: false };
     // Save the PDF to GridFS once (the proof the estimate exists on our side too).
-    let doc = await documents.findDocumentByMeta(c.claimId, "estimateId", est.estimateId);
-    if (!doc) {
+    const known = obj(facts(c).estimate);
+    let documentId = known.estimateId === est.estimateId && known.documentId ? String(known.documentId) : "";
+    if (!documentId) {
       const res = await fetch(`${config.mocksUrl}/body_shop/bookings/${c.ext("bookingId")}/estimate.pdf`);
       if (!res.ok) return { done: false, note: "estimate PDF not downloadable yet" };
       const data = Buffer.from(await res.arrayBuffer());
       const lines = (est.lines as { item: string; amount: number }[]) ?? [];
-      await documents.putDocument({
+      documentId = await documents.putDocument({
         claimId: c.claimId,
-        docType: "estimate_pdf",
+        docType: "estimate",
         source: "body_shop",
         filename: `${est.estimateId}.pdf`,
         contentType: "application/pdf",
         data,
         extractedText: `Repair estimate ${est.estimateId} total ${est.amount}. ${lines.map((l) => `${l.item} ${l.amount}`).join("; ")}`,
-        meta: { estimateId: est.estimateId, amount: est.amount },
       });
-      doc = await documents.findDocumentByMeta(c.claimId, "estimateId", est.estimateId);
     }
-    await claims.updateClaim(c.claimId, { "facts.estimate": { estimateId: est.estimateId, amount: est.amount, lines: est.lines, documentId: String(doc?._id ?? "") } });
+    await claims.updateClaim(c.claimId, { "facts.estimate": { estimateId: est.estimateId, amount: est.amount, lines: est.lines, documentId } });
     await claims.upsertMoneyItem(c.claimId, { ref: `estimate:${est.estimateId}`, category: "repair", billed: Number(est.amount) });
     return { done: true, note: `estimate ${est.estimateId} $${est.amount} saved to GridFS` };
   },
@@ -284,7 +283,7 @@ const T8: Handler = {
   async plan(c) {
     const est = obj(facts(c).estimate);
     let pdfBase64: string | null = null;
-    const doc = est.estimateId ? await documents.findDocumentByMeta(c.claimId, "estimateId", est.estimateId) : null;
+    const doc = est.documentId ? await documents.getDocumentMeta(String(est.documentId)) : null;
     if (doc?.gridfsId) pdfBase64 = (await documents.getFile(doc.gridfsId as never)).toString("base64");
     return {
       type: "action",
@@ -359,8 +358,8 @@ const T12: Handler = {
     let days = cur + 4;
     let gate: Gate | null = null;
     if (days > maxDays) {
-      if (await hasDeclined(c, t.taskId, "rental_beyond_coverage")) days = maxDays;
-      else gate = "rental_beyond_coverage";
+      if (await hasDeclined(c, t.taskId, "rental_overage")) days = maxDays;
+      else gate = "rental_overage";
     }
     if (days <= cur) {
       await messageClaimant(c, `Your rental has reached the ${maxDays}-day coverage limit and the repair isn't finished. We won't extend it further without your approval.`);
@@ -444,7 +443,7 @@ const T15: Handler = {
       await c.reload();
       return T15.plan(c, t);
     }
-    if ((await hasDeclined(c, t.taskId, "sign_release")) || (await hasDeclined(c, t.taskId, "settlement_acceptance"))) {
+    if ((await hasDeclined(c, t.taskId, "sign_release")) || (await hasDeclined(c, t.taskId, "accept_settlement"))) {
       return { type: "hold", status: "waiting", note: "claimant declined the settlement; an operator will follow up" };
     }
     const o = { offerId: String(offer.offerId), amount: Number(offer.amount), deductible: Number(offer.deductible), repairTotal: Number(offer.repairTotal) };
@@ -467,7 +466,7 @@ const T15: Handler = {
         kind: "accept_settlement",
         payload: { offerId: o.offerId, acceptedBy: c.claim.claimant.name },
         expectedEffect: { offerAccepted: true, offerId: o.offerId },
-        gate: "settlement_acceptance",
+        gate: "accept_settlement",
         gateRequest: `Accept the insurer's settlement: $${o.amount} paid to the body shop (repair $${o.repairTotal} minus your $${o.deductible} deductible)? This is usually final.`,
         gateDetails: { offer: o },
       };
@@ -520,7 +519,7 @@ const T17: Handler = {
       category: "rental",
       billed: charge,
       submitted: charge,
-      gapReason: extra > 0 && (await hasApproved(c, "rental_beyond_coverage")) ? `claimant approved ${extra} day(s) beyond coverage` : null,
+      gapReason: extra > 0 && (await hasApproved(c, "rental_overage")) ? `claimant approved ${extra} day(s) beyond coverage` : null,
     });
     c.event(`rental returned: ${e.daysUsed} days, final charge $${charge} (read-back)`);
     return { task: "confirm" };
@@ -572,7 +571,7 @@ const UploadStep: Handler = {
     const kind = String(t.params.kind ?? `upload_${t.params.step}`);
     if (kind !== "upload_photos") return { type: "hold", status: "blocked_drift", note: `no adapter for ${kind}; operator needed` };
     const docs = await documents.listDocuments(c.claimId, "photo");
-    const photos = docs.length ? docs.map((d) => d.filename ?? String(d._id)) : ((facts(c).photos as string[] | undefined) ?? []);
+    const photos = docs.length ? docs.map((d) => `document:${String(d._id)}`) : ((facts(c).photos as string[] | undefined) ?? []);
     if (!photos.length) {
       await messageClaimant(c, "The insurer now needs photos of the damage. Please upload them here.");
       return { type: "hold", status: "waiting", note: "waiting for claimant photos" };

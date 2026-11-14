@@ -1,4 +1,4 @@
-import { clock } from "@claims/db";
+import { clock } from "./db.ts";
 
 const num = (v: string | undefined, d: number) => (v !== undefined && v !== "" && !Number.isNaN(Number(v)) ? Number(v) : d);
 
