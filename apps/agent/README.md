@@ -30,7 +30,8 @@ pnpm --filter agent dev       # builds packages/db, then mocks :4000 + control/w
 | Env | Meaning |
 | --- | --- |
 | `MONGODB_URI`, `MONGODB_DB` | Atlas (M0 is fine) or a local replica set (`mongod --replSet rs0`; transactions and change streams need one) |
-| `ANTHROPIC_API_KEY` | When set, the LLM runs live on `claude-opus-5-5`. When unset, `LLM_MODE` defaults to `stub`: deterministic offline heuristics that go through the same zod validation. Force with `LLM_MODE=live\|stub`. |
+| `ANTHROPIC_API_KEY` | When set, the LLM runs live. When unset, `LLM_MODE` defaults to `stub`: deterministic offline heuristics that go through the same zod validation. Force with `LLM_MODE=live\|stub`. |
+| `LLM_MODEL` | Claude model for every job. Default `claude-haiku-5-5` (fast, low cost); e.g. `claude-opus-5-5` for harder judgment. |
 | `VOYAGE_API_KEY` | `voyage-3.5` embeddings (required by `packages/db`). For offline dev only, `ALLOW_LOCAL_EMBEDDINGS=1` uses a local hashing embedding instead. |
 | `ELEVENLABS_WEBHOOK_SECRET` | HMAC secret for `/phone/post-call`. Unset: every post-call webhook is rejected. |
 | `WORKERS` | `1` (default) or `2` to show lease takeover. |
@@ -175,9 +176,11 @@ escalation after the second), `rental_expiring`, `payment_overdue` (10 days), `c
 (1 day), `promise_check` (phone). All are cancelled when their task is confirmed.
 
 **LLM** (`src/llm`). Official `@anthropic-ai/sdk`, `client.beta.messages.create` with model
-`claude-opus-5-5`, `thinking: {type: "adaptive"}`, explicit `output_config.effort` (`medium`, or
-`low` for summaries, follow-ups and task ordering), `output_config.format` JSON schema (from zod),
-server-side refusal fallbacks (`betas: ["server-side-fallback-2026-07-01"]`, `fallbacks: "default"`).
+`LLM_MODEL` (default `claude-haiku-5-5`), `thinking: {type: "adaptive"}`, explicit `output_config.effort` (`medium`, or
+`low` for summaries, follow-ups and task ordering), `output_config.format` JSON schema (from zod).
+Server-side refusal fallbacks (`betas: ["server-side-fallback-2026-07-01"]`, `fallbacks: "default"`)
+are sent only for models that have them (Opus 5/5.5, Fable 5.x, Sonnet 5.5); Haiku 5.5 has none, so a
+refusal there goes straight to an operator approval.
 `stop_reason` (including `refusal` and `max_tokens`) is checked before content is read, then
 `JSON.parse` + zod `safeParse`. No prefill, no forced `tool_choice`. The one system prompt is stable
 and carries `cache_control`, and each job's instructions go in the user turn, so every job shares
@@ -194,12 +197,15 @@ denial). Unexplained gaps go to an operator.
 
 ## Known limits
 
-- Live LLM mode has not been run here (no `ANTHROPIC_API_KEY` in this environment). Every scene was
-  run in stub mode. The live path uses the same zod schemas and the same failure handling.
-- Prompt caching: the shared system prompt (`src/llm/prompts.ts`) is about 1k tokens, which may be
-  under the model's minimum cacheable prefix, and then caching silently doesn't apply. Check
-  `usage.cache_read_input_tokens` (logged per call). If it stays 0, lengthen the stable prefix (e.g.
-  move the task-graph and gate tables from the design doc into it).
+- Every scene passes both in stub mode and live on `claude-haiku-5-5`. Live, the model reads the
+  demo intake ("a pickup truck rear-ended me") as a statement about fault, so FNOL waits for the
+  claimant's `discuss_fault` gate; the demo scripts play the claimant and approve it. Live drift
+  proposals for the new photos step come in around 0.7 confidence, so they go to an operator
+  (`drift_mapping`) instead of auto-applying; the drift scene approves them as the operator.
+- Each loop iteration that changed something rewrites the compact summary with one LLM call (~3 s on
+  Haiku), so live scenes run 2-3x slower than in stub mode.
+- Prompt caching works on Haiku 5.5: the shared system prompt plus schema is read from cache on
+  every call (about 1.3–1.9k cached tokens per call in the live logs, `usage.cache_read_input_tokens`).
 - Atlas Vector/Atlas Search are exercised only through the local fallbacks unless `MONGODB_URI`
   points at Atlas and `pnpm db:setup` has created the 3 search indexes.
 - The mock systems keep their state in `.data/mocks.json`. `POST /chaos/reset` wipes it (the demo

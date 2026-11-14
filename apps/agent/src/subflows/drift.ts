@@ -139,7 +139,11 @@ export async function applyDriftProposal(c: ClaimCtx, d: DriftTrigger, proposal:
   // New required steps become tasks wired into dependsOn so they block what they must precede.
   const inserted: string[] = [];
   for (const nt of proposal.newTasks) {
-    const blocks = nt.blocksTaskIds.length ? nt.blocksTaskIds : ["T9"];
+    // Code, not the model, decides what a new required step blocks: the task whose proof it withheld
+    // (the drift was detected on it) comes first; the model's suggestions are added after.
+    const own = d.trigger === "new_required_step" ? [d.taskId] : [];
+    const blocks = [...new Set([...own, ...nt.blocksTaskIds])];
+    if (!blocks.length) blocks.push("T9");
     const newId = `${blocks[0]}a#${nt.step}`;
     const added = await tasks.insertTaskIfMissing({
       claimId: c.claimId,

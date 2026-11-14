@@ -52,6 +52,7 @@ export async function fileClaim(over: { injuries?: boolean } = {}): Promise<stri
   const r = await api<{ claimId: string }>("POST", `${CONTROL}/control/claims`, body);
   if (r.status !== 201) throw new DemoFailure(`claim creation failed: ${JSON.stringify(r.json)}`);
   console.log(`   filed ${r.json.claimId}`);
+  playClaimant(r.json.claimId);
   return r.json.claimId;
 }
 
@@ -77,8 +78,29 @@ export async function taskStatus(claimId: string, taskId: string) {
 }
 export const taskIs = (claimId: string, taskId: string, ...st: string[]) => async () => st.includes(String(await taskStatus(claimId, taskId)));
 
+/**
+ * Plays the claimant for the fault-statement gate. A live model reads "rear-ended me" as a
+ * statement about fault, so the agent (correctly) asks the claimant before sending it to the
+ * insurer. The demo claimant approves, as they would in the claimant view. Other gates are left to
+ * each scene.
+ */
+function playClaimant(claimId: string) {
+  const t = setInterval(async () => {
+    try {
+      for (const a of await approvals.listApprovals(claimId, "pending")) {
+        if (a.gate === "discuss_fault") await decide(a, "approved", "claimant:Dana Reyes");
+      }
+    } catch {
+      /* the scene may have reset the world */
+    }
+  }, 1500);
+  t.unref();
+}
+
 /** What the dashboard does: decide the approval doc AND insert an approval_ui observation. */
 export async function decide(a: ApprovalDoc, decision: "approved" | "declined", by: string, note?: string) {
+  const current = await approvals.getApproval(String(a._id));
+  if (current?.status !== "pending") return; // already decided (by another helper)
   await approvals.decideApproval(String(a._id), decision, by, note);
   await observations.insertObservation({ claimId: a.claimId, source: "approval_ui", kind: "approval_decision", body: { approvalId: String(a._id), actionId: a.actionId, decision, decidedBy: by, note: note ?? null } });
   console.log(`   ${by} ${decision}: ${a.gate} — "${a.request.slice(0, 90)}..."`);
