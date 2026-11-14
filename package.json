@@ -13,7 +13,8 @@
     "db:build": "pnpm --filter @claim-coordinator/db run build",
     "agent:dev": "pnpm --filter agent dev",
     "typecheck": "pnpm -r typecheck",
-    "db:profiles": "pnpm --filter @claim-coordinator/db run profiles:refresh"
+    "db:profiles": "pnpm --filter @claim-coordinator/db run profiles:refresh",
+    "dashboard:dev": "pnpm --filter dashboard dev"
   },
   "repository": {
     "type": "git",

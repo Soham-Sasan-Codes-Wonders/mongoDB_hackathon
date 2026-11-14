@@ -52,6 +52,7 @@ npm test
 The repo is also a pnpm workspace (`pnpm install` at the root):
 
 - `packages/db` (`@claim-coordinator/db`): the MongoDB data layer. Run `pnpm db:setup`, `pnpm db:seed`, `pnpm db:smoke`. See `packages/db/README.md`.
+- `apps/dashboard`: the web UI on `:3000`. Claimants start a claim and follow it; operators watch the task graph and action timeline, decide approvals and run the demo panel. Run `pnpm --filter dashboard dev` next to `pnpm agent:dev`. See `apps/dashboard/README.md`.
 - `apps/agent`: the Claim Coordinator agent. It has mock insurer/body shop/rental/clinic systems on `:4000` and the control API, webhooks and phone line on `:4100`, plus the supervised workers. Run `pnpm agent:dev`. See `apps/agent/README.md` for endpoints and the demo scenes (`pnpm --filter agent demo:all`).
 
-The Express prototype above (`npm start`, `:3000`) is separate from those and keeps its state in memory.
+The Express prototype above (`npm start`) is separate from those and keeps its state in memory. It also uses `:3000`, so don't run it alongside the dashboard.
