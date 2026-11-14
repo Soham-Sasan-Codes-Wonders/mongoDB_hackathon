@@ -12,7 +12,8 @@
     "db:smoke": "pnpm --filter @claim-coordinator/db run smoke",
     "db:build": "pnpm --filter @claim-coordinator/db run build",
     "agent:dev": "pnpm --filter agent dev",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "db:profiles": "pnpm --filter @claim-coordinator/db run profiles:refresh"
   },
   "repository": {
     "type": "git",

@@ -21,7 +21,8 @@
     "seed": "tsx src/scripts/seed.ts",
     "reset": "tsx src/scripts/reset.ts",
     "smoke": "tsx src/scripts/smoke.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "profiles:refresh": "tsx src/scripts/refresh-profiles.ts"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
