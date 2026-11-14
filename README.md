@@ -46,3 +46,12 @@ The UI exposes a set of demo events that move the claim through the lifecycle:
 ```bash
 npm test
 ```
+
+## Workspace packages
+
+The repo is also a pnpm workspace (`pnpm install` at the root):
+
+- `packages/db` (`@claim-coordinator/db`): the MongoDB data layer. Run `pnpm db:setup`, `pnpm db:seed`, `pnpm db:smoke`. See `packages/db/README.md`.
+- `apps/agent`: the Claim Coordinator agent. It has mock insurer/body shop/rental/clinic systems on `:4000` and the control API, webhooks and phone line on `:4100`, plus the supervised workers. Run `pnpm agent:dev`. See `apps/agent/README.md` for endpoints and the demo scenes (`pnpm --filter agent demo:all`).
+
+The Express prototype above (`npm start`, `:3000`) is separate from those and keeps its state in memory.

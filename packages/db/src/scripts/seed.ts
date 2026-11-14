@@ -2,6 +2,7 @@ import { client, closeDatabase, collection } from "../database.js";
 import { setupDatabase } from "../setup.js";
 import { embed } from "../search.js";
 import { type Claim } from "../schemas.js";
+import { V1_SYSTEM_SPECS, specToProfileFields, type SystemSpec } from "../systemSpecs.js";
 
 const canonicalFields = [
   ["policyNumber", "The insured's policy identifier used by the insurer."],
@@ -22,12 +23,9 @@ const canonicalFields = [
   ["otherDriverName", "The name of the other driver involved in the collision."]
 ] as const;
 
-const systems = [
-  { system: "insurer", workflowSteps: ["open claim", "check coverage", "submit estimate", "submit invoices", "record payment"], fields: [{ name: "policy_ref", type: "string", required: true, sampleValues: ["POL-88291", "P-10042"] }, { name: "claim_no", type: "string", required: false, sampleValues: ["INS-77102"] }, { name: "treatment_code", type: "string", required: true, sampleValues: ["PT-01", "XR-02"] }, { name: "amount", type: "number", required: true, sampleValues: ["1250.00"] }] },
-  { system: "body_shop", workflowSteps: ["book drop-off", "attach estimate", "authorize repair", "mark ready", "release vehicle"], fields: [{ name: "vehicle_vin", type: "string", required: true, sampleValues: ["1HGCM82633A004352"] }, { name: "repair_state", type: "string", required: true, sampleValues: ["in_repair", "ready"] }, { name: "estimate_total", type: "number", required: true, sampleValues: ["4800.00"] }] },
-  { system: "rental", workflowSteps: ["check limits", "reserve vehicle", "extend reservation", "return vehicle"], fields: [{ name: "reservation_key", type: "string", required: true, sampleValues: ["CLM-1042:T5:create_reservation:1"] }, { name: "daily_cap", type: "number", required: true, sampleValues: ["45.00"] }, { name: "end_date", type: "date", required: true, sampleValues: ["2026-11-25"] }] },
-  { system: "clinic", workflowSteps: ["issue invoice", "send invoice", "provide missing code"], fields: [{ name: "invoice_id", type: "string", required: true, sampleValues: ["INV-321"] }, { name: "procedure_code", type: "string", required: true, sampleValues: ["PT-01"] }, { name: "total_due", type: "number", required: true, sampleValues: ["375.50"] }] }
-];
+// v1 profiles describe the mock systems apps/agent serves at GET /<system>/describe (see systemSpecs.ts),
+// so the drift subflow's diff starts from what the systems really accept.
+const systems = (Object.values(V1_SYSTEM_SPECS) as SystemSpec[]).map((spec) => ({ system: spec.system, workflowSteps: spec.workflowSteps, fields: specToProfileFields(spec) }));
 
 const starterExperiences = [
   ["drift", "rental", "Rental API renamed reservationKey to booking_ref.", { mapping: { booking_ref: "reservationKey" } }, "Field mapped and read-back verified."],
@@ -48,7 +46,7 @@ try {
   const profiles = collection("system_profiles");
   const experiences = collection("experiences");
   const now = new Date();
-  const profileTexts = systems.flatMap((profile) => profile.fields.map((field) => `${field.name}: ${field.type}. Samples: ${field.sampleValues.join(", ")}`));
+  const profileTexts = systems.flatMap((profile) => profile.fields.map((field) => `${field.endpoint}.${field.name}: ${field.type}. ${field.description ?? ""} Samples: ${field.sampleValues.join(", ")}`));
   const seedTexts = [
     ...canonicalFields.map(([name, description]) => `${name}: ${description}`),
     ...profileTexts,
@@ -68,7 +66,7 @@ try {
     vectorOffset += profile.fields.length;
     for (let index = 0; index < profile.fields.length; index += 1) {
       const field = profile.fields[index]!;
-      await profiles.updateOne({ docType: "field", system: profile.system, version: 1, fieldName: field.name }, { $set: { docType: "field", system: profile.system, version: 1, fieldName: field.name, description: `${field.type} field; required=${field.required}`, sampleValues: field.sampleValues, embedding: vectors[index]!, createdAt: now } }, { upsert: true });
+      await profiles.updateOne({ docType: "field", system: profile.system, version: 1, fieldName: field.name, description: { $regex: `^${field.endpoint} ` } }, { $set: { docType: "field", system: profile.system, version: 1, fieldName: field.name, description: `${field.endpoint} ${field.description ?? ""} (${field.type}${field.required ? ", required" : ""})`, sampleValues: field.sampleValues, embedding: vectors[index]!, createdAt: now } }, { upsert: true });
     }
   }
   const experienceVectors = seedVectors.slice(vectorOffset);
@@ -96,7 +94,7 @@ try {
   ];
   for (const contact of contacts) await collection("contacts").updateOne({ phone: contact.phone }, { $set: contact }, { upsert: true });
   await collection("sim_clock").updateOne({ _id: "clock" } as import("mongodb").Document, { $setOnInsert: { _id: "clock", simEpoch: now, wallEpoch: now, speed: 86_400_000 / 20_000, paused: false } }, { upsert: true });
-  console.log(`Seeded ${canonicalFields.length} canonical fields, 4 profiles, ${starterExperiences.length} experiences, 5 contacts, and the demo claim.`);
+  console.log(`Seeded ${canonicalFields.length} canonical fields, ${systems.length} profiles (v1 = the mock systems' /describe), ${starterExperiences.length} experiences, 5 contacts, and the demo claim.`);
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

@@ -1,0 +1,37 @@
+{
+  "name": "agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/dev.ts",
+    "mocks": "tsx src/mocks/main.ts",
+    "worker": "tsx src/worker/main.ts",
+    "demo:day0": "tsx scripts/demo-day0.ts",
+    "demo:ghost": "tsx scripts/demo-ghost-booking.ts",
+    "demo:crash": "tsx scripts/demo-crash.ts",
+    "demo:drift": "tsx scripts/demo-drift.ts",
+    "demo:close": "tsx scripts/demo-day30-close.ts",
+    "demo:phone": "tsx scripts/demo-phone.ts",
+    "demo:rejection": "tsx scripts/demo-rejection.ts",
+    "demo:all": "tsx scripts/demo-all.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "predev": "pnpm --filter @claim-coordinator/db run build",
+    "pretypecheck": "pnpm --filter @claim-coordinator/db run build",
+    "pretest": "pnpm --filter @claim-coordinator/db run build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "fastify": "^5.12.8",
+    "mongodb": "^6.20.0",
+    "zod": "^4.6.7",
+    "@claim-coordinator/db": "workspace:*"
+  }
+}

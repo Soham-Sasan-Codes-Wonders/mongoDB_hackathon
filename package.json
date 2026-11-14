@@ -5,11 +5,15 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test",
-    "db:setup": "pnpm --filter @claim-coordinator/db setup",
-    "db:seed": "pnpm --filter @claim-coordinator/db seed",
-    "db:reset": "pnpm --filter @claim-coordinator/db reset",
-    "db:smoke": "pnpm --filter @claim-coordinator/db smoke"
+    "test": "node --test test/*.test.js",
+    "db:setup": "pnpm --filter @claim-coordinator/db run setup",
+    "db:seed": "pnpm --filter @claim-coordinator/db run seed",
+    "db:reset": "pnpm --filter @claim-coordinator/db run reset",
+    "db:smoke": "pnpm --filter @claim-coordinator/db run smoke",
+    "db:build": "pnpm --filter @claim-coordinator/db run build",
+    "agent:dev": "pnpm --filter agent dev",
+    "typecheck": "pnpm -r typecheck",
+    "db:profiles": "pnpm --filter @claim-coordinator/db run profiles:refresh"
   },
   "repository": {
     "type": "git",
@@ -25,5 +29,9 @@
   "description": "Claim Coordinator hackathon workspace",
   "dependencies": {
     "express": "^5.3.0"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
   }
 }

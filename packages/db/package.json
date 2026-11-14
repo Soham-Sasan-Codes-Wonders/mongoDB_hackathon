@@ -5,14 +5,24 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "files": ["dist", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "setup": "tsx src/scripts/setup.ts",
     "seed": "tsx src/scripts/seed.ts",
     "reset": "tsx src/scripts/reset.ts",
-    "smoke": "tsx src/scripts/smoke.ts"
+    "smoke": "tsx src/scripts/smoke.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "profiles:refresh": "tsx src/scripts/refresh-profiles.ts"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

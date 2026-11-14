@@ -24,3 +24,16 @@ export async function renewLease(claimId: string, workerId: string, ttlMs: numbe
 export async function releaseLease(claimId: string, workerId: string): Promise<boolean> {
   return (await collection("leases").deleteOne({ _id: claimId, workerId } as Document)).deletedCount === 1;
 }
+
+/* ---------------------------------------------------------------- agent additions */
+
+export async function getLease(claimId: string): Promise<Lease | null> {
+  return collection<Lease & Document>("leases").findOne({ _id: claimId } as Document);
+}
+export async function listLeases(): Promise<Lease[]> {
+  return collection<Lease & Document>("leases").find({}).toArray();
+}
+/** Leases whose holder stopped renewing: the sweeper's takeover candidates (checks expiresAt directly; TTL only cleans up). */
+export async function expiredLeases(): Promise<Lease[]> {
+  return collection<Lease & Document>("leases").find({ expiresAt: { $lt: wallNow() } }).toArray();
+}

@@ -7,7 +7,8 @@ const VOYAGE_URL = "https://api.voyageai.com/v1/embeddings";
 
 export async function embed(texts: string[], inputType: EmbedInputType): Promise<number[][]> {
   const key = process.env.VOYAGE_API_KEY;
-  if (!key) throw new Error("VOYAGE_API_KEY is required to create embeddings");
+  if (!key && process.env.ALLOW_LOCAL_EMBEDDINGS === "1") return texts.map(localEmbedding);
+  if (!key) throw new Error("VOYAGE_API_KEY is required to create embeddings (or set ALLOW_LOCAL_EMBEDDINGS=1 for offline dev)");
   const output: number[][] = [];
   for (let offset = 0; offset < texts.length; offset += 64) {
     const batch = texts.slice(offset, offset + 64);
@@ -48,18 +49,19 @@ export async function embed(texts: string[], inputType: EmbedInputType): Promise
 
 export async function matchCanonicalField(fieldText: string, k: number): Promise<Document[]> {
   const [vector] = await embed([fieldText], "query");
-  return collection("system_profiles").aggregate([
+  return vectorSearch(collection("system_profiles"), [
     { $vectorSearch: { index: "system_profiles_vector", path: "embedding", queryVector: vector, numCandidates: Math.max(k * 10, 100), limit: k, filter: { docType: "canonical_field" } } },
     { $project: { _id: 1, fieldName: 1, description: 1, score: { $meta: "vectorSearchScore" } } }
-  ]).toArray();
+  ], vector!, { docType: "canonical_field" }, k, { _id: 1, fieldName: 1, description: 1 });
 }
 
-export async function findSimilarExperiences(problemText: string, filters: { problemType: string; system: string }, k: number): Promise<Document[]> {
+export async function findSimilarExperiences(problemText: string, filters: { problemType?: string; system?: string }, k: number): Promise<Document[]> {
   const [vector] = await embed([problemText], "query");
-  return collection("experiences").aggregate([
-    { $vectorSearch: { index: "experiences_vector", path: "embedding", queryVector: vector, numCandidates: Math.max(k * 10, 100), limit: k, filter: { problemType: filters.problemType, system: filters.system } } },
+  const filter: Document = { ...(filters.problemType ? { problemType: filters.problemType } : {}), ...(filters.system ? { system: filters.system } : {}) };
+  return vectorSearch(collection("experiences"), [
+    { $vectorSearch: { index: "experiences_vector", path: "embedding", queryVector: vector, numCandidates: Math.max(k * 10, 100), limit: k, filter } },
     { $project: { problemType: 1, system: 1, problem: 1, fix: 1, outcome: 1, score: { $meta: "vectorSearchScore" } } }
-  ]).toArray();
+  ], vector!, filter, k, { problemType: 1, system: 1, problem: 1, fix: 1, outcome: 1 });
 }
 
 export async function recordExperience(input: Omit<import("./schemas.js").Experience, "_id" | "embedding" | "createdAt">): Promise<import("mongodb").InsertOneResult<Document>> {
@@ -95,4 +97,55 @@ async function ensureIndex(target: Collection, name: string, type: "search" | "v
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   throw new Error(`Timed out waiting for Atlas Search index ${name} to become queryable`);
+}
+
+/* ---------------------------------------------------------------- local-dev fallbacks (agent additions) */
+
+let localWarned = false;
+/**
+ * Run a $vectorSearch pipeline; on a deployment without Atlas Search (a local replica set) fall back
+ * to an in-process cosine scan over the filtered docs, warning once. Atlas is always tried first.
+ */
+async function vectorSearch(target: Collection, pipeline: Document[], vector: number[], filter: Document, k: number, projection: Document): Promise<Document[]> {
+  try {
+    return await target.aggregate(pipeline).toArray();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/only allowed on MongoDB Atlas|Unrecognized pipeline stage|not supported|SearchNotEnabled/i.test(message)) throw error;
+    if (!localWarned) console.warn(`[db] $vectorSearch unavailable here (${message.slice(0, 80)}); using a local cosine scan`);
+    localWarned = true;
+  }
+  const docs = await target.find(filter).limit(5000).toArray();
+  return docs
+    .map((d) => {
+      const out: Document = { _id: d._id, score: Array.isArray(d.embedding) ? (1 + cosine(vector, d.embedding as number[])) / 2 : 0 };
+      for (const key of Object.keys(projection)) out[key] = d[key];
+      return out;
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k);
+}
+
+export function cosine(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i += 1) { dot += a[i]! * b[i]!; na += a[i]! * a[i]!; nb += b[i]! * b[i]!; }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
+}
+
+/**
+ * Deterministic offline embedding (character trigrams + words, hashed into 1024 dims), used only when
+ * ALLOW_LOCAL_EMBEDDINGS=1 and no VOYAGE_API_KEY. Every value is a non-integer so BSON stores doubles.
+ */
+export function localEmbedding(text: string): number[] {
+  const v = new Array<number>(1024).fill(0);
+  const norm = ` ${text.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_\-.]/g, " ").toLowerCase()} `;
+  const add = (gram: string, w: number) => {
+    let h = 2166136261;
+    for (let i = 0; i < gram.length; i += 1) h = Math.imul(h ^ gram.charCodeAt(i), 16777619);
+    v[(h >>> 0) % 1024]! += ((h >>> 10) & 1 ? 1 : -1) * w;
+  };
+  for (let i = 0; i < norm.length - 2; i += 1) add(norm.slice(i, i + 3), 1);
+  for (const w of norm.split(/\s+/).filter(Boolean)) add(`w:${w}`, 2);
+  const mag = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
+  return v.map((x) => x / mag + 1e-9);
 }
