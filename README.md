@@ -1,6 +1,13 @@
-# Claim Coordinator Agent Demo
+# Claim Coordinator Agent: how it works
+An AI agent that takes a car-accident claim from first report to a closed file. It deals with the insurer, the body shop, the rental company and the clinic on the claimant's behalf, and it only counts a step as done when it has proof that the step took effect.
 
-This project turns the workflow design for a claim-coordination agent into a working local proof-of-concept. It models the claim lifecycle, action-state tracking, evidence-based task completion, and the review gates described in the workflow.
+1. The problem
+After a car accident, the claimant has to coordinate four or five organisations: file with the insurer, book a body shop, get a rental, forward medical bills, chase approvals, and check the money adds up at the end. It takes weeks of calls and emails, and things fall through the cracks:
+
+a booking "went through" but doesn't exist;
+a portal changed its form;
+someone said "it's approved" on the phone and it wasn't.
+Our agent does that coordination. The hard part isn't calling APIs. It's knowing what actually happened when outside systems are slow, flaky, change without warning, or say "OK" and then drop the request.
 
 ## What is included
 
